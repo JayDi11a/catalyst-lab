@@ -1,0 +1,42 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pgvector-cluster
+  namespace: pgvector
+spec:
+  instances: 1
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+
+  postgresql:
+    parameters:
+      shared_buffers: "512MB"
+      effective_cache_size: "1536MB"
+      work_mem: "16MB"
+      maintenance_work_mem: "256MB"
+      max_connections: "200"
+    shared_preload_libraries:
+      - "vector"
+
+  bootstrap:
+    initdb:
+      database: vectordb
+      owner: vectordb
+      postInitSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+
+  storage:
+    size: 20Gi
+    storageClass: local-path
+
+  affinity:
+    nodeSelector:
+      kubernetes.io/hostname: worker-gpu2
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "4"
+      memory: "4Gi"
