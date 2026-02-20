@@ -356,6 +356,36 @@ Trigger some inference requests through LLaMA Stack, then check the MLflow UI:
 3. Click on the **Traces** tab
 4. You should see traces appearing with span details
 
+## Deployment Status
+
+**Deployed on:** 2026-02-20
+
+### MLflow Core Components
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| Database | ✅ Deployed | PostgreSQL `mlflow` database created |
+| PVC | ✅ Bound | `mlflow-artifacts-pvc` (10Gi, local-path) |
+| Deployment | ✅ Running | Pod `mlflow-5f8c98f876-r4rqj` (1/1) |
+| Service | ✅ Active | ClusterIP `10.99.143.31:5000` |
+| Ingress | ✅ Active | `mlflow.159.253.136.11.nip.io` |
+
+### OTel Trace Collection
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| Experiment | ✅ Created | `llamastack-traces` (ID: 1) |
+| OTel Collector ConfigMap | ✅ Deployed | Experiment ID configured |
+| OTel Collector Deployment | ✅ Running | Pod `otel-collector-6c776b7ccd-hw6gp` (1/1) |
+| OTel Collector Service | ✅ Active | ClusterIP `10.100.19.220:4317,4318` |
+| LLaMA Stack Config | ✅ Verified | `OTEL_EXPORTER_OTLP_ENDPOINT` configured |
+
+### Access Information
+
+- **MLflow UI:** http://mlflow.159.253.136.11.nip.io
+- **MLflow API:** http://mlflow.159.253.136.11.nip.io/api/2.0/mlflow/
+- **OTel Collector (internal):** http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+
 ## Troubleshooting
 
 ### Pod Not Starting
