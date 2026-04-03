@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: golem-cortex-regenerate
+  namespace: catalystlab-shared
+  labels:
+    app: project-golem
+    component: cortex-regenerate
+spec:
+  ttlSecondsAfterFinished: 3600  # Cleanup after 1 hour
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: project-golem
+        component: cortex-regenerate
+    spec:
+      restartPolicy: OnFailure
+      nodeSelector:
+        kubernetes.io/hostname: worker-gpu2
+      containers:
+      - name: cortex-generator
+        image: quay.io/aicatalyst/project-golem:latest
+        imagePullPolicy: Always
+        command: ["python", "ingest.py"]
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: golem-db-secret
+              key: password
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        - name: cortex-data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+      volumes:
+      - name: config
+        configMap:
+          name: golem-config
+      - name: cortex-data
+        persistentVolumeClaim:
+          claimName: golem-cortex-pvc

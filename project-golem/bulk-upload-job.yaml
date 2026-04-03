@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: golem-bulk-upload
+  namespace: catalystlab-shared
+  labels:
+    app: project-golem
+    component: bulk-upload
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: project-golem
+        component: bulk-upload
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: bulk-uploader
+        image: quay.io/aicatalyst/project-golem:latest
+        imagePullPolicy: Always
+        command: ["python", "bulk_upload.py"]
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+      volumes:
+      - name: config
+        configMap:
+          name: golem-config

@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: golem-wikipedia-ingest
+  namespace: catalystlab-shared
+  labels:
+    app: project-golem
+    component: wikipedia-ingest
+spec:
+  ttlSecondsAfterFinished: 86400  # Cleanup after 24 hours
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: project-golem
+        component: wikipedia-ingest
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: wikipedia-ingester
+        image: quay.io/aicatalyst/project-golem:latest
+        imagePullPolicy: Always
+        command: ["python", "wikipedia_ingest.py"]
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: golem-db-secret
+              key: password
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+      volumes:
+      - name: config
+        configMap:
+          name: golem-config

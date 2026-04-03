@@ -253,6 +253,297 @@ kubectl apply -f deployment.yaml
 - **Size**: Can be weighted by importance, recency, or other metadata
 - **Glow/Highlight**: Active during queries to show relevant memories
 
+## Data Ingestion Methods
+
+Project Golem supports multiple data ingestion strategies for populating the vector database with diverse content. Each method serves different use cases and data volumes.
+
+### Overview of Ingestion Approaches
+
+| Method | Script | Documents | Approach | Use Case |
+|--------|--------|-----------|----------|----------|
+| **Bulk Upload** | `bulk_upload.py` | ~10 sample docs | Via LLaMA Stack API | Quick testing with curated content |
+| **Wikipedia Batch** | `wikipedia_ingest.py` | 200+ articles | Via LLaMA Stack API | Comprehensive knowledge base from Wikipedia |
+| **Direct Small** | `direct_ingest.py` | 28 documents | Direct pgvector insertion | Bypasses LLaMA Stack for full control |
+| **Direct Expanded** | `direct_ingest_expanded.py` | 180 documents | Direct pgvector insertion | Dense visualization with 20 categories |
+
+### Method 1: Bulk Upload (LLaMA Stack)
+
+**File:** `bulk_upload.py`
+
+Uploads pre-written technical documents through LLaMA Stack's document ingestion API. LLaMA Stack handles chunking, embedding generation, and storage.
+
+**Sample topics:**
+- AI Transformers
+- Quantum Computing Basics
+- Neural Plasticity
+- Blockchain Consensus
+- Renaissance Humanism
+
+**Usage:**
+
+```bash
+# Local execution
+uv run python bulk_upload.py
+
+# Kubernetes Job
+kubectl apply -f bulk-upload-job.yaml
+kubectl logs -f job/golem-bulk-upload -n catalystlab-shared
+```
+
+**Expected output:**
+
+```
+📤 Uploading 10 documents to LLaMA Stack...
+✓ Uploaded: ai_transformers.txt
+✓ Uploaded: quantum_computing_basics.txt
+...
+✅ Bulk upload complete: 10/10 documents
+```
+
+**Advantages:**
+- Leverages LLaMA Stack's chunking logic
+- Automatic embedding generation
+- Metadata tracking via LLaMA Stack
+
+**Limitations:**
+- Dependent on LLaMA Stack service availability
+- Less control over chunking boundaries
+- No category metadata (yet)
+
+### Method 2: Wikipedia Batch Ingestion (LLaMA Stack)
+
+**File:** `wikipedia_ingest.py`
+
+Fetches 200+ Wikipedia articles across 13 topic categories and ingests them via LLaMA Stack. Provides comprehensive, encyclopedic knowledge base for the neural memory visualization.
+
+**Categories (200+ total articles):**
+- AI & Machine Learning (21 articles)
+- Robotics & Automation (15 articles)
+- Quantum & Physics (19 articles)
+- Neuroscience & Cognition (17 articles)
+- Space & Astronomy (18 articles)
+- Cryptography & Security (15 articles)
+- Renaissance & Art (14 articles)
+- Biology & Genetics (19 articles)
+- Computer Science (18 articles)
+- Mathematics (18 articles)
+- Philosophy & Logic (16 articles)
+- History (15 articles)
+- Economics & Finance (13 articles)
+
+**Usage:**
+
+```bash
+# Local execution
+uv run python wikipedia_ingest.py
+
+# Kubernetes Job
+kubectl apply -f wikipedia-ingest-job.yaml
+kubectl logs -f job/golem-wikipedia-ingest -n catalystlab-shared
+```
+
+**Expected output:**
+
+```
+📚 Wikipedia Batch Ingestion Starting...
+Category: AI & Machine Learning (21 articles)
+  ✓ Fetched: Artificial_intelligence
+  ✓ Fetched: Machine_learning
+  ...
+✅ Ingestion complete: 218 articles across 13 categories
+⏱  Total time: 45 minutes
+```
+
+**Advantages:**
+- Rich, authoritative content from Wikipedia
+- Organized by category for semantic clustering
+- Large dataset (200+ documents) for dense visualization
+- Real-world knowledge representation
+
+**Limitations:**
+- Long ingestion time (45+ minutes for 200 articles)
+- Requires stable network connection to Wikipedia API
+- Depends on LLaMA Stack availability
+
+### Method 3: Direct pgvector Ingestion (Small Dataset)
+
+**File:** `direct_ingest.py`
+
+Bypasses LLaMA Stack entirely, generating embeddings via Qwen3-Embedding-8B and inserting directly into pgvector. Provides full control over chunking, metadata, and categories.
+
+**Dataset:** 28 hand-crafted documents across 10 categories
+- 2-3 documents per category (AI, Quantum, Neuroscience, Crypto, Art, Biology, CS, Math, Robotics, Space)
+
+**Usage:**
+
+```bash
+# Local execution
+uv run python direct_ingest.py
+
+# Kubernetes Job
+kubectl apply -f direct-ingest-job.yaml
+kubectl logs -f job/golem-direct-ingest -n catalystlab-shared
+```
+
+**Expected output:**
+
+```
+🔗 Connecting to pgvector (vectordb database)...
+✓ Connected
+📝 Preparing 28 documents...
+🧮 Generating embeddings via Qwen3-Embedding-8B...
+  ✓ Batch 1/4: 10 embeddings
+  ✓ Batch 2/4: 10 embeddings
+  ...
+💾 Inserting into pgvector...
+✅ Direct ingestion complete: 28 documents
+```
+
+**Advantages:**
+- Full control over document content, chunking, and metadata
+- No dependency on LLaMA Stack service
+- Category metadata included for visualization coloring
+- Fast ingestion (minutes vs. hours)
+- Predictable, curated dataset
+
+**Limitations:**
+- Manual document curation required
+- Must handle embedding generation directly
+- Smaller dataset (28 docs)
+
+### Method 4: Direct pgvector Ingestion (Expanded Dataset)
+
+**File:** `direct_ingest_expanded.py`
+
+Extended version of direct ingestion with **180 documents across 20 categories** (9 per category). Creates a denser neural memory graph for more compelling visualization.
+
+**Categories (180 total documents):**
+- AI & Machine Learning (9)
+- Quantum & Physics (9)
+- Neuroscience & Cognition (9)
+- Cryptography & Security (9)
+- Renaissance & Art (9)
+- Biology & Genetics (9)
+- Computer Science (9)
+- Mathematics (9)
+- Robotics & Automation (9)
+- Space & Astronomy (9)
+- Philosophy & Logic (9)
+- History (9)
+- Economics & Finance (9)
+- Materials Science (9)
+- Climate Science (9)
+- Psychology (9)
+- Linguistics (9)
+- Energy Systems (9)
+- Urban Planning (9)
+- Literature (9)
+
+**Usage:**
+
+```bash
+# Local execution
+uv run python direct_ingest_expanded.py
+
+# Kubernetes Job
+kubectl apply -f direct-ingest-expanded-job.yaml
+kubectl logs -f job/golem-direct-ingest-expanded -n catalystlab-shared
+```
+
+**Expected output:**
+
+```
+🔗 Connecting to pgvector (vectordb database)...
+✓ Connected
+📝 Preparing 180 documents across 20 categories...
+🧮 Generating embeddings via Qwen3-Embedding-8B...
+  ✓ Batch 1/18: 10 embeddings
+  ...
+  ✓ Batch 18/18: 10 embeddings
+💾 Inserting into pgvector...
+✅ Direct ingestion complete: 180 documents
+⏱  Total time: 8 minutes
+```
+
+**Advantages:**
+- Dense visualization with 180 nodes (900+ KNN edges at k=5)
+- 20 distinct categories for rich semantic structure
+- Balanced distribution (9 docs per category)
+- Full metadata control
+- Faster than Wikipedia ingestion
+
+**Limitations:**
+- Manually curated content (vs. Wikipedia's depth)
+- Larger embedding batch size requires more memory
+
+### Cortex Regeneration After Ingestion
+
+After adding new data via any ingestion method, regenerate the 3D cortex visualization:
+
+**Local:**
+
+```bash
+uv run python ingest.py
+```
+
+**Kubernetes Job:**
+
+```bash
+kubectl apply -f cortex-regenerate-job.yaml
+kubectl logs -f job/golem-cortex-regenerate -n catalystlab-shared
+```
+
+**Expected output:**
+
+```
+🔗 Connecting to pgvector...
+✓ Connected to vectordb
+📊 Found 180 vectors in database
+🧮 Applying UMAP (4096d → 3d)...
+✓ UMAP complete
+🔗 Building KNN graph (k=5)...
+✓ KNN graph built (900 connections)
+💾 Saving to golem_cortex.json...
+✓ Cortex saved (180 nodes, 900 edges)
+🧠 Golem cortex is ready!
+```
+
+This creates/updates `golem_cortex.json` with 3D positions for all vectors. Restart `GolemServer.py` to reload the visualization.
+
+### Choosing the Right Ingestion Method
+
+**Use Bulk Upload when:**
+- Testing the system with minimal setup
+- You have specific curated documents to add
+- You want LLaMA Stack's automatic chunking
+
+**Use Wikipedia Batch when:**
+- Building a comprehensive knowledge base
+- You need authoritative, real-world content
+- You want diverse topics for semantic clustering
+- Time for 45+ minute ingestion is acceptable
+
+**Use Direct Ingestion (Small) when:**
+- You need full control over content and metadata
+- You want fast, predictable ingestion
+- LLaMA Stack is unavailable
+- You're testing visualization with specific data
+
+**Use Direct Ingestion (Expanded) when:**
+- You need dense visualization (180+ nodes)
+- You want balanced category distribution
+- You need full control but want substantial data volume
+- You're demoing the system and want impressive visuals
+
+### Additional Ingestion Scripts
+
+**Backup/Experimental Scripts (not for production):**
+
+- `direct_ingest_28docs_backup.py` - Backup of original 28-doc version
+- `direct_ingest_360.py` - Experimental 360-document variant (development)
+
+These are kept for reference but not actively maintained.
+
 ## Configuration
 
 ### UMAP Parameters

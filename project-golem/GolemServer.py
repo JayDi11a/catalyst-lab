@@ -136,6 +136,17 @@ def get_embedding(text):
 
 def search_vectors(query_embedding, top_k=10):
     """Search pgvector for similar vectors"""
+    global db_conn
+
+    # Check connection health and reconnect if needed
+    try:
+        if db_conn.closed:
+            print("⚠️  Database connection closed, reconnecting...")
+            db_conn = connect_to_database()
+    except Exception as e:
+        print(f"⚠️  Database connection check failed, reconnecting: {e}")
+        db_conn = connect_to_database()
+
     cursor = db_conn.cursor()
 
     # pgvector similarity search
