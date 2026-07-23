@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: praxis-gateway
+  namespace: catalystlab-shared
+  labels:
+    app: praxis-gateway
+    component: verification
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: praxis-gateway
+  template:
+    metadata:
+      labels:
+        app: praxis-gateway
+        component: verification
+    spec:
+      containers:
+        - name: praxis-gateway
+          image: quay.io/aicatalyst/praxis-gateway:latest
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: FSTAR_HOME
+              value: /opt/fstar
+            - name: Z3_PATH
+              value: /usr/local/bin/z3
+            - name: PRAXIS_LOG_LEVEL
+              value: info
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+            - name: OTEL_SERVICE_NAME
+              value: praxis-gateway
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: specs
+              mountPath: /opt/praxis/specs
+              readOnly: true
+            - name: config
+              mountPath: /opt/praxis/config
+              readOnly: true
+      volumes:
+        - name: specs
+          configMap:
+            name: praxis-specs
+        - name: config
+          configMap:
+            name: praxis-config

@@ -1,0 +1,75 @@
+# Praxis Verification Gateway
+# Multi-stage build: generate gRPC stubs, then assemble runtime image.
+# Image: quay.io/aicatalyst/praxis-gateway:latest
+#
+# Build:  podman build -t quay.io/aicatalyst/praxis-gateway:latest -f Containerfile .
+# Run:    podman run -p 50051:50051 -p 8080:8080 quay.io/aicatalyst/praxis-gateway:latest
+
+# ──────────────────────────────────────────────────────────────────────
+# Stage 1: builder — install tools and generate gRPC Python stubs
+# ──────────────────────────────────────────────────────────────────────
+FROM registry.access.redhat.com/ubi9/python-312:latest AS builder
+
+USER 0
+WORKDIR /build
+
+# Copy only what grpc_tools needs so this layer is cached aggressively
+COPY proto/ proto/
+RUN pip install --no-cache-dir "grpcio-tools>=1.60" \
+    && python -m grpc_tools.protoc \
+        -Iproto \
+        --python_out=proto \
+        --grpc_python_out=proto \
+        proto/praxis.proto
+
+# ──────────────────────────────────────────────────────────────────────
+# Stage 2: runtime
+# ──────────────────────────────────────────────────────────────────────
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+USER 0
+
+LABEL maintainer="AI Catalyst Lab" \
+      description="Praxis Verification Gateway — formally verified AI agent runtime" \
+      io.openshift.tags="praxis,grpc,verification"
+
+WORKDIR /opt/praxis
+
+# Install runtime dependencies
+RUN pip install --no-cache-dir \
+    "grpcio>=1.60" \
+    "grpcio-health-checking>=1.60" \
+    "pyyaml>=6.0"
+
+# Copy the server source
+COPY src/praxis/ src/praxis/
+
+# Copy verification logic from test modules into the runtime package.
+# In the repo these live under tests/praxis/ but at runtime they are
+# part of the praxis package so the server can import them directly.
+COPY tests/praxis/gateway_client.py src/praxis/gateway_client.py
+COPY tests/praxis/owasp_asi06_vectors.py src/praxis/owasp_asi06_vectors.py
+
+# Copy generated gRPC stubs from builder stage
+COPY --from=builder /build/proto/praxis_pb2.py src/praxis/praxis_pb2.py
+COPY --from=builder /build/proto/praxis_pb2_grpc.py src/praxis/praxis_pb2_grpc.py
+
+# Copy F* specs for reference (not executed — KaRaMeL extraction is future work)
+COPY specs/ specs/
+
+# Environment variables.
+# FSTAR_HOME / Z3_PATH are placeholders — F*/Z3 are NOT installed in
+# this image; the Python mirror handles runtime verification.
+ENV FSTAR_HOME=/opt/fstar \
+    Z3_PATH=/usr/local/bin/z3 \
+    PRAXIS_LOG_LEVEL=info \
+    PYTHONPATH=/opt/praxis/src
+
+# gRPC and health-check ports
+EXPOSE 50051 8080
+
+# OpenShift runs containers as an arbitrary non-root UID in the
+# root group (GID 0).  The UBI image already sets up user 1001.
+USER 1001
+
+CMD ["python", "-m", "praxis.server"]

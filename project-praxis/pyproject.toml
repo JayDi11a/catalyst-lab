@@ -1,0 +1,45 @@
+[project]
+name = "project-praxis"
+version = "0.1.0"
+description = "Formally verified AI agent runtime"
+requires-python = ">=3.11"
+dependencies = [
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
+    "grpcio-health-checking>=1.60",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-timeout>=2.3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "fstar: marks tests that invoke fstar.exe (may be slow)",
+    "p3: P3 poisoning resistance tests",
+    "p4: P4 completeness tests",
+    "integration: composed pipeline tests",
+]
+
+[dependency-groups]
+dev = [
+    "pylint>=4.0.6",
+]
+
+[tool.pylint.main]
+ignore-patterns = [".*_pb2.py", ".*_pb2_grpc.py"]
+
+[tool.pylint."messages control"]
+disable = [
+    "C0103",  # gRPC methods must be PascalCase
+    "C0415",  # conditional imports for optional deps (otel)
+    "E0401",  # cross-project imports resolved at runtime
+    "R0903",  # pytest test classes often have 1 method
+    "R0913",  # test helpers need many args
+    "R0917",  # test helpers need many positional args
+    "W0613",  # gRPC handlers require context/request args
+    "W0621",  # pytest fixtures redefine outer names by design
+    "W0622",  # format param in logging setup
+    "R0801",  # test files share setup patterns
+]

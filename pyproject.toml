@@ -40,4 +40,26 @@ known-first-party = ["project-golem", "scripts"]
 max-line-length = 100
 
 [tool.pylint."messages control"]
-disable = ["C0111"]
+disable = [
+    "C0103",  # gRPC methods use PascalCase by convention
+    "C0111",
+    "C0415",  # conditional imports for optional deps
+    "E0401",  # cross-project imports resolved at runtime
+    "R0801",  # test files share setup patterns
+    "R0903",  # pytest test classes often have 1 method
+    "R0913",  # test helpers need many args
+    "R0917",  # test helpers need many positional args
+    "W0212",  # test access to protected members
+    "W0613",  # gRPC handlers require context/request args
+    "W0621",  # pytest fixtures redefine outer names by design
+    "W0622",  # format param in logging setup
+    "W1510",  # subprocess.run check= handled by return code
+    "R0902",  # dataclass-like classes need many attrs
+    "C0413",  # sys.path manipulation requires import after
+    "E0611",  # cross-project module resolution
+]
+
+[dependency-groups]
+dev = [
+    "pylint>=4.0.5",
+]

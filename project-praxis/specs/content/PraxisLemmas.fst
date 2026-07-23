@@ -1,0 +1,173 @@
+module PraxisLemmas
+
+open FStar.String
+open FStar.List.Tot
+open PraxisTypes
+open PraxisPredicates
+
+(* === Incorrectness Lemmas (Gardner, OPLSS 2026) ===
+
+   Standard verification (the F* specs in this project):
+     "If verification SUCCEEDS, all properties HOLD"
+     forall inputs. verified(inputs) ==> properties(inputs)
+
+   Incorrectness lemmas (this module):
+     "If the input is FABRICATED, rejection is GUARANTEED"
+     forall inputs. fabricated(inputs) ==> rejected(inputs)
+
+   Together these prove the verification gate is TIGHT:
+   - Not vacuous (accepts everything — would be trivially "sound")
+   - Not paranoid (rejects everything — would be useless)
+   - Catches the specific attack patterns we care about
+
+   cf. LBAC/TypeGuard (Zhou et al. 2605.12863):
+   Their type system enforces policies — if code type-checks,
+   it is policy-compliant. Our refinement types do the same,
+   AND these lemmas prove policy-violating inputs are rejected.
+
+   cf. TACIT (Odersky et al. 2603.00991):
+   Their capture checking prevents capability leakage.
+   Our rule obligations prevent evidence fabrication.
+   These lemmas prove the obligations are not bypassable. *)
+
+
+(* L1: Identity fabrication is always rejected.
+
+   If an agent claims identity (conclusion = premise) but the
+   conclusion DIFFERS from the single premise, the rule obligation
+   MUST fail. This is the core defense against hallucination
+   persistence loops.
+
+   Quantified: for ALL steps where the identity rule is claimed
+   with a mismatched conclusion, rejection is guaranteed.
+   No counterexample exists. *)
+
+let identity_fabrication_rejected (step: inference_step)
+  : Lemma
+    (requires
+      RuleIdentity? step.rule /\
+      (match step.premises with
+       | [p] -> p <> step.step_conclusion
+       | _ -> True))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L2: Multi-premise identity is always rejected.
+
+   Identity requires EXACTLY one premise. An agent cannot smuggle
+   extra premises into an identity claim. Prevents a class of
+   attacks where fabricated content is hidden among valid premises. *)
+
+let identity_multi_premise_rejected (step: inference_step)
+  : Lemma
+    (requires
+      RuleIdentity? step.rule /\
+      Cons? step.premises /\
+      Cons? (Cons?.tl step.premises))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L3: Untrusted tool output is always rejected.
+
+   An agent cannot launder untrusted tool output as verified
+   content by wrapping it in a ToolResult rule. The trust flag
+   is part of the evidence — it cannot be omitted.
+
+   This mirrors TACIT's tracked capabilities: tool trust is a
+   capability that must be explicitly provided, not assumed. *)
+
+let untrusted_tool_rejected (step: inference_step)
+  : Lemma
+    (requires
+      (match step.rule with
+       | RuleToolResult ev -> ev.te_tool_trusted = false
+       | _ -> False))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L4: Empty chains are always rejected.
+
+   An agent cannot claim a conclusion without providing any
+   inference steps. The empty chain is structurally invalid
+   regardless of the observation set.
+
+   This is a frame-rule consequence: you cannot derive new
+   knowledge from no reasoning steps. *)
+
+let empty_chain_rejected (obs: list string) (chain: inference_chain)
+  : Lemma
+    (requires chain.steps == [])
+    (ensures chain_well_formed obs chain = false)
+= ()
+
+
+(* L5: Evidence-free derivation is always rejected.
+
+   Even the weakest inference rule (derivation — for domain-
+   specific abductive reasoning) requires a non-empty domain
+   rule identifier. An agent cannot make completely evidence-free
+   claims about the world.
+
+   Strict deployments can further constrain this with a domain
+   rule catalog, but the MINIMUM is a non-empty identifier. *)
+
+let ruleless_derivation_rejected (step: inference_step)
+  : Lemma
+    (requires
+      (match step.rule with
+       | RuleDerivation ev -> String.length ev.de_domain_rule_id = 0
+       | _ -> False))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L6: Over-confident derivation is always rejected.
+
+   Confidence must be in [0, 100]. An agent cannot inflate
+   its confidence to mask uncertainty. *)
+
+let overconfident_derivation_rejected (step: inference_step)
+  : Lemma
+    (requires
+      (match step.rule with
+       | RuleDerivation ev -> ev.de_confidence > 100
+       | _ -> False))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L7: Contradictions are always rejected.
+
+   If a new fact shares a key with an existing fact but has
+   different content, the consistency check MUST fail.
+   An agent cannot silently overwrite established knowledge
+   without explicit retraction. *)
+
+let contradiction_rejected
+  (new_fact: memory_entry)
+  (existing: memory_state)
+  (witness: memory_entry)
+  : Lemma
+    (requires
+      List.Tot.memP witness existing.facts /\
+      witness.me_key = new_fact.me_key /\
+      ~(witness.me_content = new_fact.me_content))
+    (ensures no_contradiction new_fact existing = false)
+= let rec aux (fs: list memory_entry)
+    : Lemma
+      (requires List.Tot.memP witness fs /\
+                witness.me_key = new_fact.me_key /\
+                ~(witness.me_content = new_fact.me_content))
+      (ensures List.Tot.for_all (fun f -> not (contradicts new_fact f)) fs = false)
+      (decreases fs)
+  = match fs with
+    | [] -> ()
+    | f :: rest ->
+      if f.me_key = new_fact.me_key && not (f.me_content = new_fact.me_content)
+      then ()
+      else aux rest
+  in
+  aux existing.facts

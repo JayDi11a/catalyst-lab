@@ -1,0 +1,23 @@
+# F* build artifacts
+*.checked
+*.krml
+_build/
+.fstar-cache/
+
+# Z3
+*.smt2
+
+# KaRaMeL extraction output
+out/
+
+# Config with real values
+config/praxis-config.yaml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store

@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <AGENT_DEPLOYMENT_NAME>
+  namespace: catalystlab-shared
+spec:
+  template:
+    spec:
+      containers:
+        # Praxis verification sidecar — intercepts agent memory writes
+        - name: praxis-sidecar
+          image: quay.io/aicatalyst/praxis-sidecar:latest
+          ports:
+            - name: intercept
+              containerPort: 50052
+              protocol: TCP
+          env:
+            - name: PRAXIS_GATEWAY_URL
+              value: praxis-gateway.catalystlab-shared.svc.cluster.local:50051
+            - name: PRAXIS_MODE
+              value: intercept  # intercept | audit | passthrough
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+            - name: OTEL_SERVICE_NAME
+              value: praxis-sidecar
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
