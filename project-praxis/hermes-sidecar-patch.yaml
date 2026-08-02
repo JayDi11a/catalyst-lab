@@ -6,7 +6,7 @@
 #
 # Usage:
 #   kubectl patch deployment hermes-agent \
-#     --namespace catalystlab-shared \
+#     --namespace praxis-verified \
 #     --patch-file hermes-sidecar-patch.yaml
 #
 # The Hermes agent persists to two tiers:
@@ -25,7 +25,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: hermes-agent
-  namespace: catalystlab-shared
+  namespace: praxis-verified
 spec:
   template:
     metadata:
@@ -73,7 +73,7 @@ spec:
               protocol: TCP
           env:
             - name: PRAXIS_GATEWAY_URL
-              value: praxis-gateway.catalystlab-shared.svc.cluster.local:50051
+              value: praxis-gateway.praxis-verified.svc.cluster.local:50051
             - name: PRAXIS_MODE
               value: intercept  # intercept | audit | passthrough
             # Hermes memory tier bounds
@@ -84,7 +84,7 @@ spec:
               value: "inference,skill,tool,temporal,witness"
             # OTel integration
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+              value: http://otel-collector.praxis-verified.svc.cluster.local:4317
             - name: OTEL_SERVICE_NAME
               value: praxis-sidecar
           resources:

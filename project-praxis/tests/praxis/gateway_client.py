@@ -112,6 +112,25 @@ def derivation_rule(rule_id: str, desc: str, confidence: int = 100) -> Inference
     )
 
 
+# --- Automatic Rule Classification (mirrors F* InferenceProxy.classify_rule) ---
+
+
+def classify_rule(obs_contents: list[str], conclusion: str) -> InferenceRule:
+    """Classify the inference rule by comparing conclusion to observations.
+
+    Picks the strongest applicable rule:
+    Identity > Extraction > Aggregation > Derivation.
+    """
+    if any(o == conclusion for o in obs_contents):
+        return identity_rule()
+    matching = next((o for o in obs_contents if conclusion in o), None)
+    if matching is not None:
+        return extraction_rule(source_premise=matching)
+    if len(conclusion) <= sum(len(o) for o in obs_contents):
+        return aggregation_rule(source_premises=list(obs_contents))
+    return derivation_rule(rule_id="llm-inference", desc="proxy-classified", confidence=50)
+
+
 # --- Core Data Types ---
 
 
@@ -334,6 +353,43 @@ def cross_agent_verify(witness: ProofWitness, stored_content_hash: str) -> bool:
 
 def witness_has_minimum_properties(witness: ProofWitness, required: list[str]) -> bool:
     return all(req in witness.properties for req in required)
+
+
+# --- Inference Proxy Helpers (mirrors F* InferenceProxy module) ---
+
+
+def extract_observations_from_messages(messages: list[dict]) -> list[Observation]:
+    """Extract observations from OpenAI chat completion messages array."""
+    observations = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content") or ""
+        if role == "tool":
+            observations.append(
+                Observation(
+                    source=f"tool:{msg.get('tool_call_id', 'unknown')}",
+                    content=content,
+                    trust=TrustLevel.TOOL_OUTPUT,
+                    tool_call_id=msg.get("tool_call_id"),
+                )
+            )
+        elif role == "user":
+            observations.append(
+                Observation(
+                    source="user",
+                    content=content,
+                    trust=TrustLevel.EXTERNAL_INPUT,
+                )
+            )
+    return observations
+
+
+def build_chain_from_proxy(observations: list[Observation], conclusion: str) -> InferenceChain:
+    """Build a verified inference chain from proxy-captured observations."""
+    obs_contents = [o.content for o in observations]
+    rule = classify_rule(obs_contents, conclusion)
+    step = InferenceStep(premises=obs_contents, rule=rule, conclusion=conclusion)
+    return InferenceChain(steps=[step], final_conclusion=conclusion)
 
 
 # --- Rule Validators ---

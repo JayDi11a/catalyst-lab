@@ -1,0 +1,424 @@
+# Hermes Agent + Praxis Verification Sidecar
+# Deployed in praxis-verified namespace for end-to-end demo.
+# Uses shared Gemma 4 31B in ls-evals as LLM backend.
+#
+# Prerequisites:
+#   - CNPG cluster 'praxis-pg-cluster' running (postgresql-cluster.yaml)
+#   - MLflow deployed (mlflow-deployment.yaml)
+#   - Plugin ConfigMap applied (hermes-plugin-configmap.yaml)
+#   - praxis-verified enrolled in ServiceMeshMemberRoll (for mTLS)
+#
+# Usage:
+#   oc apply -f hermes-praxis-deployment.yaml -n praxis-verified
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-config
+  namespace: praxis-verified
+  labels:
+    app: hermes-agent
+    component: config
+data:
+  API_SERVER_ENABLED: "true"
+  API_SERVER_HOST: "0.0.0.0"
+  API_SERVER_KEY: "internal-openshift-health-check"
+  API_SERVER_PORT: "8080"
+  GATEWAY_ALLOW_ALL_USERS: "true"
+  HERMES_HOME: "/opt/data"
+  LLM_MODEL: "gemma-4-31b"
+  OPENAI_BASE_URL: "http://localhost:8082/v1"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: praxis-verified
+  labels:
+    app: hermes-agent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-agent
+  namespace: praxis-verified
+  labels:
+    app: hermes-agent
+    component: agent
+    praxis.ai/verified: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hermes-agent
+      component: agent
+  template:
+    metadata:
+      labels:
+        app: hermes-agent
+        component: agent
+        praxis.ai/verified: "true"
+      annotations:
+        sidecar.istio.io/inject: "true"
+        traffic.sidecar.istio.io/excludeOutboundPorts: "5432,5000"
+    spec:
+      imagePullSecrets:
+        - name: quay-pull-secret
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: setup-hermes-config
+          image: registry.access.redhat.com/ubi9/ubi-micro:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cat > /opt/data/config.yaml <<'CONF'
+              memory:
+                provider: praxis
+              CONF
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        # Hermes agent — API gateway mode (no Telegram)
+        - name: hermes
+          image: quay.io/aicatalyst/hermes-agent:latest
+          imagePullPolicy: Always
+          command:
+            - /opt/hermes/venv/bin/python
+            - -m
+            - hermes_cli.main
+          args:
+            - gateway
+          env:
+            - name: HOME
+              value: /opt/data
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HERMES_MEMORY_ENDPOINT
+              value: "localhost:50052"
+            - name: HERMES_VERIFY_WRITES
+              value: "true"
+            - name: PRAXIS_SIDECAR_URL
+              value: "http://localhost:8081/verify"
+            - name: SSL_CERT_FILE
+              value: /etc/pki/tls/custom/tls-ca-bundle.pem
+            - name: REQUESTS_CA_BUNDLE
+              value: /etc/pki/tls/custom/tls-ca-bundle.pem
+          envFrom:
+            - configMapRef:
+                name: hermes-config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: praxis-plugin
+              mountPath: /opt/data/plugins/praxis
+              readOnly: true
+            - name: trusted-ca
+              mountPath: /etc/pki/tls/custom
+              readOnly: true
+
+        # Praxis verification sidecar
+        - name: praxis-sidecar
+          image: quay.io/aicatalyst/praxis-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - name: intercept
+              containerPort: 50052
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PRAXIS_GRPC_PORT
+              value: "50052"
+            - name: PRAXIS_HEALTH_PORT
+              value: "8081"
+            - name: PRAXIS_GATEWAY_URL
+              value: praxis-gateway.praxis-verified.svc.cluster.local:50051
+            - name: PRAXIS_MODE
+              value: intercept
+            - name: PRAXIS_TIER1_BOUND
+              value: "2200"
+            - name: PRAXIS_SURFACES
+              value: "inference,skill,tool,temporal,witness"
+            - name: PRAXIS_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: host
+            - name: PRAXIS_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: port
+            - name: PRAXIS_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: dbname
+            - name: PRAXIS_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: user
+            - name: PRAXIS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: password
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow.praxis-verified.svc.cluster.local:5000
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+            - name: OTEL_SERVICE_NAME
+              value: praxis-sidecar
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: praxis-config
+              mountPath: /opt/praxis/config
+              readOnly: true
+            - name: praxis-work
+              mountPath: /tmp/praxis-work
+            - name: tmp
+              mountPath: /tmp
+
+        # Praxis inference proxy — captures LLM I/O at the RHOAI KServe
+        # boundary for automatic rule classification and verification.
+        # Agents call localhost:8082/v1 instead of KServe directly.
+        - name: praxis-inference-proxy
+          image: quay.io/aicatalyst/praxis-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - name: proxy
+              containerPort: 8082
+              protocol: TCP
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PRAXIS_MODE
+              value: inference-proxy
+            - name: PRAXIS_PROXY_PORT
+              value: "8082"
+            - name: PRAXIS_LLM_UPSTREAM
+              value: "https://gemma-4-31b-predictor.ls-evals.svc.cluster.local:8443/v1"
+            - name: PRAXIS_LOG_LEVEL
+              value: info
+            - name: SSL_CERT_FILE
+              value: /etc/pki/tls/custom/tls-ca-bundle.pem
+            - name: REQUESTS_CA_BUNDLE
+              value: /etc/pki/tls/custom/tls-ca-bundle.pem
+            - name: PRAXIS_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: host
+            - name: PRAXIS_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: port
+            - name: PRAXIS_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: dbname
+            - name: PRAXIS_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: user
+            - name: PRAXIS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: praxis-pg-cluster-app
+                  key: password
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow.praxis-verified.svc.cluster.local:5000
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.catalystlab-shared.svc.cluster.local:4317
+            - name: OTEL_SERVICE_NAME
+              value: praxis-inference-proxy
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: trusted-ca
+              mountPath: /etc/pki/tls/custom
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data
+        - name: praxis-config
+          configMap:
+            name: praxis-config
+        - name: praxis-plugin
+          configMap:
+            name: praxis-hermes-plugin
+        - name: praxis-work
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: trusted-ca
+          configMap:
+            name: odh-trusted-ca-bundle
+            optional: true
+            items:
+              - key: ca-bundle.crt
+                path: tls-ca-bundle.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-agent
+  namespace: praxis-verified
+  labels:
+    app: hermes-agent
+    component: agent
+spec:
+  type: ClusterIP
+  selector:
+    app: hermes-agent
+    component: agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: intercept
+      port: 50052
+      targetPort: intercept
+      protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: hermes-agent
+  namespace: praxis-verified
+  labels:
+    app: hermes-agent
+spec:
+  to:
+    kind: Service
+    name: hermes-agent
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-gateway
+  namespace: praxis-verified
+  labels:
+    app: praxis-gateway
+spec:
+  to:
+    kind: Service
+    name: praxis-gateway
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

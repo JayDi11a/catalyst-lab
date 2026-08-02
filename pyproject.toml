@@ -43,20 +43,26 @@ max-line-length = 100
 disable = [
     "C0103",  # gRPC methods use PascalCase by convention
     "C0111",
+    "C0302",  # server.py is one module by design
+    "C0413",  # sys.path manipulation requires import after
     "C0415",  # conditional imports for optional deps
+    "C1803",  # explicit == [] is clearer in tests
     "E0401",  # cross-project imports resolved at runtime
+    "E0611",  # cross-project module resolution
     "R0801",  # test files share setup patterns
+    "R0902",  # dataclass-like classes need many attrs
     "R0903",  # pytest test classes often have 1 method
     "R0913",  # test helpers need many args
+    "R0914",  # handler functions have many locals
+    "R0915",  # handler functions have many statements
     "R0917",  # test helpers need many positional args
     "W0212",  # test access to protected members
+    "W0603",  # module-level state for DB/MLflow singletons
     "W0613",  # gRPC handlers require context/request args
     "W0621",  # pytest fixtures redefine outer names by design
     "W0622",  # format param in logging setup
+    "W0718",  # broad except needed for resilient I/O
     "W1510",  # subprocess.run check= handled by return code
-    "R0902",  # dataclass-like classes need many attrs
-    "C0413",  # sys.path manipulation requires import after
-    "E0611",  # cross-project module resolution
 ]
 
 [dependency-groups]

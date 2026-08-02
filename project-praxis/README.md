@@ -6,7 +6,7 @@ Praxis bridges formal proof logic (F\*/Pulse separation logic, Z3 SMT solver) wi
 
 *Praxis (πρᾶξις) — verified action.*
 
-**Namespace:** `catalystlab-shared` (verification gateway sidecar to kagent agent pods)
+**Namespace:** `praxis-verified` (verification gateway sidecar to agent pods)
 
 ## Overview
 
@@ -111,25 +111,58 @@ pip install openshell
 project-praxis/
 ├── README.md                      # This file
 ├── ARCHITECTURE.md                # Detailed design, verification properties, PoC phases
+├── PAPER.md                       # Full paper in Markdown
 ├── .gitignore                     # F* build artifacts, configs with secrets
 ├── specs/
+│   ├── VerifiedWrite.fst          # Composed: P1-P4 + P5+P7 with separation logic
+│   ├── VerifiedSkillWrite.fst     # Composed: skill verify + bounded persist
 │   ├── content/                   # Content verification (P1-P4)
-│   │   ├── AgentReasoning.fst     # LLM inference soundness, consistency, poisoning
-│   │   └── AgentReasoning.fsti    # Interface: content verification predicates
+│   │   ├── PraxisTypes.fst        # Core algebraic types, trust levels, evidence
+│   │   ├── PraxisPredicates.fst   # Rule validators, chain_well_formed, no_contradiction
+│   │   ├── AgentReasoning.fst     # P1-P4 composition: inference, consistency, poison, completeness
+│   │   ├── AgentReasoning.fsti    # Interface: content verification predicates
+│   │   ├── PoisonDetection.fst    # P3: OWASP ASI06 pattern matching
+│   │   ├── PoisonDetection.fsti   # Interface: poison detection predicates
+│   │   ├── CompletenessCheck.fst  # P4: domain-spec completeness
+│   │   ├── CompletenessCheck.fsti # Interface: completeness predicates
+│   │   ├── SkillVerification.fst  # Surface 2: generated skill verification
+│   │   ├── SkillVerification.fsti # Interface: skill safety predicates
+│   │   ├── TemporalValidity.fst   # Surface 4: proof certificate expiry
+│   │   ├── TemporalValidity.fsti  # Interface: temporal validity predicates
+│   │   ├── PraxisNormTests.fst    # 20 assert_norm tests on concrete inputs
+│   │   └── PraxisLemmas.fst       # 7 incorrectness lemmas (L1-L7)
 │   └── substrate/                 # Substrate verification (P5-P10)
-│       ├── AgentState.fst         # Ownership, frame rule, bounds, concurrency
+│       ├── AgentState.fst         # P5 ownership, P7 bounds (Pulse separation logic)
 │       ├── AgentState.fsti        # Interface: substrate verification predicates
-│       ├── ToolScope.fst          # Tool call scope and side-effect containment
-│       └── ToolScope.fsti         # Interface: tool verification predicates
+│       ├── ToolScope.fst          # P9 tool scope, P10 side-effect containment
+│       ├── ToolScope.fsti         # Interface: tool verification predicates
+│       ├── ProofTransport.fst     # Surface 5: multi-agent proof witness transport
+│       └── ProofTransport.fsti    # Interface: cross-agent verification predicates
+├── paper/
+│   ├── main.tex                   # ACM acmart (sigplan) LaTeX paper
+│   ├── references.bib             # 16 BibTeX entries
+│   └── Makefile                   # Build PDF with tectonic
+├── src/praxis/
+│   └── server.py                  # gRPC verification gateway server
+├── tests/praxis/
+│   ├── gateway_client.py          # Python mirror of F* specs (runtime engine)
+│   ├── owasp_asi06_vectors.py     # 31 OWASP ASI06 attack vectors
+│   └── test_*.py                  # 140 tests across 6 test files
+├── proto/
+│   └── praxis.proto               # gRPC service definition (7 RPCs, 30+ messages)
 ├── config/
 │   ├── praxis-config.example.yaml # Verification gateway configuration
 │   └── openshell-policy.yaml      # OpenShell sandbox policy for Praxis agents
 ├── deployment.yaml                # Verification gateway deployment
 ├── service.yaml                   # Verification gateway service
 ├── sidecar-patch.yaml             # Inject Praxis as sidecar to kagent agent pods
+├── hermes-sidecar-patch.yaml      # Hermes-specific sidecar with OpenShell init
 └── scripts/
+    ├── run-demo.sh                # Full demo runner (F* verify + MCP + pytest + demo)
+    ├── demo.py                    # Interactive 5-surface demo (7 scenarios)
+    ├── verify-specs.sh            # Run F* verification on all 22 specs
     ├── install-fstar.sh           # F*/Pulse/Z3 toolchain setup
-    └── verify-specs.sh            # Run F* verification on all specs
+    └── build-gateway.sh           # Container image build (Podman)
 ```
 
 ## Verification Properties
@@ -235,10 +268,10 @@ kubectl -n kagent patch deployment kagent-controller \
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 0 | Single verified action (P1, P2, P5, P7) | Not started |
-| 1 | Content + tool use verification with OWASP test vectors | Not started |
-| 2 | Full Pulse substrate model (Hermes + OpenClaw + tool scope) | Not started |
-| 3 | Kubernetes integration (sidecar, OTel, Grafana dashboard) | Not started |
+| 0 | Single verified action (P1, P2, P5, P7) | **Complete** |
+| 1 | Content + tool use verification with OWASP test vectors | **Complete** |
+| 2 | Full Pulse substrate model (Hermes + OpenClaw + tool scope) | **Complete** |
+| 3 | Kubernetes integration (sidecar, OTel, Grafana dashboard) | Partial (manifests ready) |
 | 4 | Multi-agent fleet + EU AI Act compliance trail | Not started |
 
 ## References

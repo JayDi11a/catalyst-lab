@@ -12,6 +12,19 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-timeout>=2.3"]
+otel = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+]
+storage = [
+    "psycopg2-binary>=2.9",
+]
+mlflow = [
+    "mlflow>=2.10",
+]
+proxy = [
+    "httpx>=0.27",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -33,13 +46,19 @@ ignore-patterns = [".*_pb2.py", ".*_pb2_grpc.py"]
 [tool.pylint."messages control"]
 disable = [
     "C0103",  # gRPC methods must be PascalCase
+    "C0302",  # server.py is one module by design
     "C0415",  # conditional imports for optional deps (otel)
+    "C1803",  # explicit == [] is clearer in tests
     "E0401",  # cross-project imports resolved at runtime
+    "R0801",  # test files share setup patterns
     "R0903",  # pytest test classes often have 1 method
     "R0913",  # test helpers need many args
+    "R0914",  # handler functions have many locals
+    "R0915",  # handler functions have many statements
     "R0917",  # test helpers need many positional args
+    "W0603",  # module-level state for DB/MLflow singletons
     "W0613",  # gRPC handlers require context/request args
     "W0621",  # pytest fixtures redefine outer names by design
     "W0622",  # format param in logging setup
-    "R0801",  # test files share setup patterns
+    "W0718",  # broad except needed for resilient I/O
 ]

@@ -1,0 +1,5 @@
+name: praxis
+version: 1.0.0
+description: "Praxis verification sidecar — routes memory writes through formal verification before persistence."
+hooks:
+  - on_memory_write

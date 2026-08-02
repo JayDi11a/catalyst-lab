@@ -69,18 +69,23 @@ every persist operation across five agent execution surfaces: model
 inference, code generation, tool invocation, skill persistence, and
 multi-agent communication. Praxis uses \fstar{}/Pulse separation logic with
 Z3 SMT proof discharge to verify 10 properties spanning content soundness
-and memory substrate safety. We deploy Praxis as a verification sidecar
-alongside the Hermes agentic framework on Red Hat OpenShift AI with
-vLLM/KServe model serving and NVIDIA OpenShell sandbox enforcement. Our
-evaluation shows 22 verified \fstar{} specifications, 140 Python runtime
-tests, and zero-admit formal proofs covering OWASP ASI06 memory poisoning
-vectors. To our knowledge, Praxis is the first system to apply separation
-logic to AI agent persistent memory.
+and memory substrate safety. A key architectural contribution is the
+\emph{inference proxy}---an OpenAI-compatible reverse proxy that captures
+observations and conclusions at the model serving boundary, enabling
+automatic inference rule classification without framework modification. We
+deploy Praxis as a verification sidecar alongside the Hermes agentic
+framework on Red Hat OpenShift AI with vLLM/KServe model serving and NVIDIA
+OpenShell sandbox enforcement. Our evaluation shows 24 verified \fstar{}
+specifications, 177 Python runtime tests, 10 incorrectness lemmas, and
+zero-admit formal proofs covering OWASP ASI06 memory poisoning vectors. To
+our knowledge, Praxis is the first system to apply separation logic to AI
+agent persistent memory.
 \end{abstract}
 
 \keywords{formal verification, separation logic, agentic AI, persistent memory, hallucination detection, \fstar{}, Pulse}
 
 \begin{document}
+\sloppy
 
 \maketitle
 
@@ -124,11 +129,24 @@ pipeline---that what it persists is derivable from real observations through
 valid inference. Not ahead-of-time program verification, but
 \emph{proof-per-action at runtime} across five execution surfaces.
 
+\paragraph{The observation capture problem.}
+When verification hooks intercept memory writes at the framework level, they
+see only the conclusion---the content the agent wants to persist. The
+observation that justified the conclusion (a tool output, a user message) is
+lost. Without the observation, the Identity check degenerates to
+\texttt{content == content}---always true. Any hallucination passes. Praxis
+solves this with an \emph{inference proxy} (Section~\ref{sec:proxy}) that
+sits at the model serving boundary, capturing both the prompt (observations)
+and the response (conclusions) before they reach the agent. This is
+framework-agnostic: the agent sets \texttt{OPENAI\_BASE\_URL} to the proxy
+and requires no code changes.
+
 \subsection{Five Verification Surfaces}
 
 \begin{table}[t]
 \caption{Praxis verification surfaces and their correspondence to Hermes agent features.}
 \label{tab:surfaces}
+\small
 \begin{tabular}{@{}lll@{}}
 \toprule
 \textbf{Surface} & \textbf{What Praxis Proves} & \textbf{Hermes Feature} \\
@@ -223,6 +241,7 @@ agent verification system addresses.
 \begin{table}[t]
 \caption{Capability comparison with concurrent verification approaches for agentic AI.}
 \label{tab:comparison}
+\small
 \begin{tabular}{@{}lcccc@{}}
 \toprule
 \textbf{Capability} & \textbf{Dafny-IL} & \textbf{LBAC} & \textbf{TACIT} & \textbf{Praxis} \\
@@ -271,6 +290,7 @@ type trust_level =
 \begin{table}[t]
 \caption{Verification strength spectrum: the agent chooses the rule; the system checks the obligation.}
 \label{tab:spectrum}
+\small
 \begin{tabular}{@{}llll@{}}
 \toprule
 \textbf{Rule} & \textbf{Obligation} & \textbf{Strength} & \textbf{Expressiveness} \\
@@ -396,6 +416,65 @@ rejection is \emph{necessary} under attack conditions:
 \end{itemize}
 
 
+\subsection{Inference Proxy Specification (\texttt{InferenceProxy.fst})}
+\label{sec:proxy-spec}
+
+The inference proxy operates on OpenAI chat completion messages. We model
+these in \fstar{} and specify two key functions:
+
+\begin{lstlisting}[language=fstar,caption={Automatic inference rule classification at the model serving boundary.},label={lst:classify}]
+let classify_rule (obs_contents: list string)
+                  (conclusion: string) : inference_rule =
+  if existsb (fun o -> o = conclusion) obs_contents
+  then RuleIdentity
+  else match find (fun o ->
+         contains_substring o conclusion) obs_contents with
+    | Some matching ->
+        RuleExtraction ({ ext_source_premise = matching })
+    | None ->
+        if length conclusion <= total_string_length obs_contents
+        then RuleAggregation
+               ({ agg_source_premises = obs_contents })
+        else RuleDerivation
+               ({ de_domain_rule_id = "llm-inference";
+                  de_rule_desc = "proxy-classified";
+                  de_confidence = 50 })
+\end{lstlisting}
+
+The classification is conservative: it assigns the \emph{strongest} rule
+whose structural precondition is met (Identity $>$ Extraction $>$
+Aggregation $>$ Derivation). Observation extraction filters chat messages to
+retain only evidence-bearing roles (\texttt{RoleTool} $\to$
+\texttt{ToolOutput}, \texttt{RoleUser} $\to$ \texttt{ExternalInput});
+system and assistant messages produce no observations.
+
+\subsection{Proxy Incorrectness Lemmas (\texttt{ProxyLemmas.fst})}
+\label{sec:proxy-lemmas}
+
+Three incorrectness lemmas prove the proxy classification is tight---correct
+acceptance AND correct rejection:
+
+\begin{itemize}
+  \item L\textsubscript{P1} (\texttt{verbatim\_relay\_verified}): If a tool
+    message's content matches the conclusion verbatim, \texttt{classify\_rule}
+    returns \texttt{RuleIdentity}. No false negatives for faithful relay.
+  \item L\textsubscript{P2} (\texttt{novel\_content\_not\_identity}): If no
+    message content matches the conclusion, \texttt{classify\_rule} does
+    \emph{not} return \texttt{RuleIdentity}. Novel hallucinations cannot be
+    classified as verbatim relay.
+  \item L\textsubscript{P3} (\texttt{no\_evidence\_means\_derivation}): If all
+    messages are system/assistant (no tool or user input), any non-empty
+    conclusion is classified as \texttt{RuleDerivation}. Evidence-free
+    conclusions cannot claim identity, extraction, or aggregation.
+\end{itemize}
+
+L\textsubscript{P2} composes with core lemma L1: together they prove that
+hallucinated content is rejected when the deployment requires Identity-or-better
+classification. Each proxy lemma is supported by an auxiliary lemma that
+bridges message-level and observation-level reasoning via induction on the
+message list.
+
+
 %%% ================================================================
 \section{Implementation}
 \label{sec:implementation}
@@ -449,31 +528,67 @@ listens on port 50052 and forwards verified requests to the gateway on port
 interception. The entire sidecar runs within the NVIDIA
 OpenShell~\cite{nvidia2026openshell} sandbox.
 
+\subsection{Inference Proxy}
+\label{sec:proxy}
+
+The inference proxy is an OpenAI-compatible reverse proxy that intercepts
+\texttt{/v1/chat/completions} requests between the agent and KServe model
+serving. On each request, the proxy: (1)~extracts observations from the
+\texttt{messages[]} array (tool outputs and user inputs), (2)~forwards the
+request to the upstream KServe InferenceService, (3)~classifies the
+inference rule by comparing the response to the captured observations via
+\texttt{classify\_rule}, (4)~stores the verification result in PostgreSQL
+and emits an OTel span, and (5)~returns the response to the agent with
+\texttt{X-Praxis-Rule} and \texttt{X-Praxis-Status} headers.
+
+The proxy is framework-agnostic: any agent using the OpenAI chat completion
+API can be verified by setting \texttt{OPENAI\_BASE\_URL} to the proxy
+endpoint. No framework modification is required. The proxy deploys as a
+sidecar container alongside the agent pod, using the same image as the
+verification gateway with \texttt{PRAXIS\_MODE=inference-proxy}.
+
 \subsection{Deployment on Red Hat OpenShift AI}
 
-\begin{lstlisting}[language={},caption={Deployment architecture: Hermes agent with Praxis sidecar on OpenShift AI.},label={lst:arch}]
-+- OpenShift AI ----------------------------------+
-|                                                  |
-|  vLLM/KServe InferenceService (GPU serving)     |
-|         |                                        |
-|         v  OpenAI-compatible API                 |
-|  +- NVIDIA OpenShell Sandbox -----------------+ |
-|  |                                             | |
-|  |  +- Hermes Agent (UBI 9) ---------------+  | |
-|  |  |  MEMORY.md, USER.md, SQLite, skills  |  | |
-|  |  +----------------+---------------------+  | |
-|  |                   | gRPC MemoryIntent       | |
-|  |  +----------------v---------------------+  | |
-|  |  |  Praxis Sidecar                      |  | |
-|  |  |  F*/Z3 -> certificate or rejection   |  | |
-|  |  |  OTel span -> MLflow audit trail     |  | |
-|  |  +--------------------------------------+  | |
-|  |  Policy Engine (seccomp, Landlock, eBPF)    | |
-|  +---------------------------------------------+ |
-|                                                  |
-|  PostgreSQL (CNPG) | OTel | MLflow | Tempo      |
-+--------------------------------------------------+
+\begin{lstlisting}[language={},caption={Deployment architecture on OpenShift AI.},label={lst:arch}]
++- OpenShift AI ----------------------------+
+|                                            |
+| vLLM/KServe InferenceService (GPU)        |
+|       ^                                    |
+|       | HTTPS (OSSM mTLS, ODH CA)          |
+| +-----+----------------------------------+|
+| | Inference Proxy (:8082)                 ||
+| | classify_rule -> Id/Ext/Agg/Deriv       ||
+| | X-Praxis-Rule / X-Praxis-Status         ||
+| +-----+----------------------------------+|
+|       ^ OpenAI-compatible API              |
+| +- OpenShell Sandbox -------------------+ |
+| |                                       | |
+| | +- Hermes Agent (UBI 9) -----------+  | |
+| | | MEMORY.md, USER.md, SQLite       |  | |
+| | +-------------+--------------------+  | |
+| |               | gRPC MemoryIntent     | |
+| | +-------------v--------------------+  | |
+| | | Praxis Sidecar (:50052)          |  | |
+| | | F*/Z3 -> cert or rejection       |  | |
+| | | OTel span -> MLflow audit        |  | |
+| | +----------------------------------+  | |
+| | Policy Engine (seccomp, eBPF)         | |
+| +---------------------------------------+ |
+|                                            |
+| PostgreSQL (CNPG) | OTel | MLflow | Tempo |
++--------------------------------------------+
 \end{lstlisting}
+
+\paragraph{Extending Red Hat OpenShift AI TrustyAI.}
+RHOAI TrustyAI monitors model-level trust: fairness metrics, explainability
+(SHAP/LIME), and data drift detection at the InferenceService boundary.
+Praxis extends this trust model to the agent level. TrustyAI asks ``is the
+model behaving fairly?''; Praxis asks ``is the agent's memory grounded in
+real evidence?'' The inference proxy sits natively in the RHOAI model serving
+pipeline, using the same KServe API, OpenShift Service Mesh (OSSM) mTLS,
+ODH CA chain, CNPG storage, OTel tracing, and MLflow audit trail. Together
+they provide a two-layer trust architecture: model trust (TrustyAI) and
+agent trust (Praxis).
 
 \subsection{Complementary Enforcement}
 
@@ -514,15 +629,17 @@ tests.
 \begin{table}[t]
 \caption{Verification evidence summary.}
 \label{tab:results}
+\small
 \begin{tabular}{@{}lrl@{}}
 \toprule
 \textbf{Artifact} & \textbf{Count} & \textbf{Status} \\
 \midrule
-\fstar{} specifications    & 22 & All verified (zero admits) \\
-Python runtime tests        & 140 & All pass \\
+\fstar{} specifications    & 24 & All verified (zero admits) \\
+Python runtime tests        & 177 & All pass \\
 OWASP ASI06 vectors         & 23 + 8 benign & Full coverage \\
 Normalization tests         & 20 assert\_norm & Type-checker evaluated \\
-Incorrectness lemmas        & 7 & All verified \\
+Incorrectness lemmas (core) & 7 (L1--L7) & All verified \\
+Incorrectness lemmas (proxy) & 3 (L\textsubscript{P1}--L\textsubscript{P3}) & All verified \\
 Proto messages              & 30+ & Request/response/enum \\
 Hallucination loop          & 1 canonical & Rejected at P1 \\
 \bottomrule
@@ -568,9 +685,10 @@ and the Python mirror ever diverge, the bridge catches it.
 \subsection{Incorrectness Lemma Coverage}
 
 Following Gardner's incorrectness logic~\cite{gardner2026incorrectness},
-\texttt{PraxisLemmas.fst} contains 7 lemmas (L1--L7) that prove rejection
-is \emph{necessary} under specific attack conditions, not merely that
-acceptance is correct.
+\texttt{PraxisLemmas.fst} contains 7 core lemmas (L1--L7) that prove
+rejection is \emph{necessary} under specific attack conditions, and
+\texttt{ProxyLemmas.fst} adds 3 proxy lemmas (L\textsubscript{P1}--L\textsubscript{P3})
+that prove the inference proxy classification is tight.
 
 \begin{table}[t]
 \caption{Incorrectness lemmas: each proves that a specific attack class is necessarily rejected.}
@@ -586,6 +704,10 @@ L4 & Empty inference chain & P1 rejects \\
 L5 & Derivation with empty rule id & P1 rejects \\
 L6 & Derivation with confidence $>$ 100 & P1 rejects \\
 L7 & Contradiction with existing memory & P2 rejects \\
+\midrule
+L\textsubscript{P1} & Verbatim tool relay & Classified Identity \\
+L\textsubscript{P2} & Novel content (hallucination) & Not classified Identity \\
+L\textsubscript{P3} & No evidence (system/assistant only) & Classified Derivation \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -593,7 +715,10 @@ L7 & Contradiction with existing memory & P2 rejects \\
 L5 is particularly significant: even the weakest inference rule (Derivation)
 rejects evidence-free claims. An agent cannot bypass the verification gate
 by choosing the least restrictive rule---every rule demands \emph{some}
-evidence.
+evidence. The proxy lemmas complement this: L\textsubscript{P2} proves that
+the automatic classifier never misidentifies hallucinations as verbatim
+relay, and L\textsubscript{P3} proves that evidence-free conclusions are
+always flagged as derivations regardless of their content.
 
 
 %%% ================================================================
@@ -631,34 +756,36 @@ This eliminates the mirror-consistency question entirely.
 LBAC/TypeGuard~\cite{zhou2026lbac} proposes a binary separation: a
 privileged LLM with tool access that never processes untrusted data, and a
 quarantined LLM that processes untrusted data but has no tool access.
-TACIT~\cite{odersky2026tacit} refines this with Scala~3 capture checking:
-\texttt{Classified[T]} wraps values so that functions processing classified
-data cannot leak them.
+TACIT~\cite{odersky2026tacit} refines this with Scala~3 capture
+checking: \texttt{Classified[T]} wraps values so that functions
+processing classified data cannot leak them.
 
-Praxis generalizes beyond the binary privileged/quarantined distinction with
-a five-level trust spectrum. Rather than classifying the \emph{agent} as
-privileged or quarantined, Praxis classifies each \emph{inference step} on a
-continuous strength scale from Identity (strongest) through Derivation
-(weakest). This graduated model accommodates the reality that agent
-reasoning involves a mix of trust levels within a single session.
+Praxis generalizes beyond the binary privileged/quarantined
+distinction with a five-level trust spectrum.
+Rather than classifying the \emph{agent} as privileged or quarantined,
+Praxis classifies each \emph{inference step} on a continuous strength
+scale from Identity (strongest) through Derivation (weakest).
+This graduated model accommodates the reality that agent reasoning
+involves a mix of trust levels within a single session.
 
 \subsection{Separation Logic for Agent Memory}
 
-Praxis makes a novel contribution by applying separation logic to AI agent
-persistent memory. Pulse---the separation logic layer of \fstar{}---provides
-the right formalism for this domain. The points-to assertion
-\texttt{region \pointsto{} v} models exclusive ownership of a memory region
-by an agent, directly encoding the Hermes memory architecture. The
-separating conjunction \sepconj{} guarantees write isolation:
-\texttt{region\_a \pointsto{} v\_a \sepconj{} region\_b \pointsto{} v\_b}
-proves that a write to \texttt{region\_a} cannot affect
-\texttt{region\_b}---the formal statement of property P6 (frame rule).
+Praxis makes a novel contribution by applying separation logic to AI
+agent persistent memory. Pulse---the separation logic layer of
+\fstar{}---provides the right formalism for this domain. The points-to
+assertion \texttt{region}~$\pointsto$~\texttt{v} models exclusive
+ownership of a memory region by an agent, directly encoding the Hermes
+memory architecture. The separating conjunction $\sepconj$ guarantees
+write isolation: \texttt{region\_a}~$\pointsto$~\texttt{v\_a}
+$\sepconj$ \texttt{region\_b}~$\pointsto$~\texttt{v\_b} proves that a
+write to \texttt{region\_a} cannot affect \texttt{region\_b}---the
+formal statement of property P6 (frame rule).
 
-The \texttt{stt} (stateful) effect in Pulse sequences stateful operations
-with explicit pre- and post-conditions. Erased ghost state (\texttt{erased}
-types) tracks preconditions and invariants without runtime cost: the
-ownership proof exists at verification time but compiles away to zero
-overhead in the extracted code.
+The \texttt{stt} (stateful) effect in Pulse sequences stateful
+operations with explicit pre- and post-conditions. Erased ghost state
+(\texttt{erased} types) tracks preconditions and invariants without
+runtime cost: the ownership proof exists at verification time but
+compiles away to zero overhead in the extracted code.
 
 
 %%% ================================================================
@@ -671,16 +798,20 @@ obligation---verified by \fstar{}/Pulse separation logic and Z3 SMT
 discharge---we prevent hallucination persistence loops at the formal methods
 level, not the heuristic level.
 
-We claim four contributions. First, Praxis is the first application of
+We claim five contributions. First, Praxis is the first application of
 separation logic to AI agent persistent memory: the points-to assertion
 models agent ownership, the separating conjunction guarantees write
 isolation, and the frame rule proves that skill persistence does not corrupt
 curated memory. Second, the verification strength spectrum provides five
 inference rule categories that give deployers a graduated trust model rather
 than binary privileged/quarantined separation. Third, incorrectness lemmas
-prove that rejection is necessary under attack conditions. Fourth, the
+(7 core + 3 proxy) prove that rejection is necessary under attack
+conditions. Fourth, the inference proxy provides framework-agnostic
+observation capture at the model serving boundary, solving the observation
+loss problem that renders memory-hook-based verification vacuous. Fifth, the
 architecture is deployable today on Red Hat OpenShift AI with Hermes,
-vLLM/KServe, and OpenShell.
+vLLM/KServe, and OpenShell, extending RHOAI TrustyAI from model-level trust
+to agent-level memory groundedness.
 
 Praxis complements rather than competes with the three concurrent
 verification approaches. Dafny-as-IL~\cite{li2025dafny} verifies generated

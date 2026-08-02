@@ -5,15 +5,20 @@ The proto stubs are generated at container build time; the try/except
 import allows running tests and linters before code-gen.
 
 Health endpoints on :8080 let Kubernetes probes work without gRPC
-health-checking support in the load balancer.
+health-checking support in the load balancer.  POST /verify provides
+an HTTP bridge for the Hermes memory provider plugin.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import signal
+import subprocess
 import threading
+import time
 from concurrent import futures
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -51,9 +56,11 @@ from .gateway_client import (
     ToolDeclaration,
     ToolEvidence,
     TrustLevel,
+    build_chain_from_proxy,
     call_within_scope,
     certificate_reverify,
     cross_agent_verify,
+    extract_observations_from_messages,
     side_effects_contained,
     skill_interface_valid,
     skill_safe_to_persist,
@@ -307,7 +314,9 @@ class PraxisGatewayServicer(praxis_pb2_grpc.PraxisGatewayServicer):
             domain_spec=domain_spec,
         )
 
+        t0 = time.monotonic()
         result = self._client.verify_write(intent)
+        latency_ms = (time.monotonic() - t0) * 1000
 
         resp = praxis_pb2.VerifyWriteResponse(
             properties_satisfied=result.properties_satisfied,
@@ -320,6 +329,9 @@ class PraxisGatewayServicer(praxis_pb2_grpc.PraxisGatewayServicer):
         else:
             resp.status = praxis_pb2.VerifyWriteResponse.WRITE_REJECTED
             resp.violations.append(result.result.value)
+
+        _store_certificate(request.trace_id, result, result.certificate, latency_ms)
+        _log_to_mlflow(request.trace_id, result, result.certificate, latency_ms)
 
         return resp
 
@@ -479,14 +491,211 @@ class PraxisGatewayServicer(praxis_pb2_grpc.PraxisGatewayServicer):
     # -- Health --
 
     def Health(self, request, context):
-        # Report tool versions; F*/Z3 are not installed in the
-        # Python-mirror image, so we report "python-mirror".
         return praxis_pb2.HealthResponse(
             healthy=True,
-            fstar_version="python-mirror",
-            z3_version="python-mirror",
+            fstar_version=_detect_fstar_version(),
+            z3_version=_detect_z3_version(),
             specs_loaded=0,
         )
+
+
+def _detect_fstar_version() -> str:
+    fstar = os.path.join(os.environ.get("FSTAR_HOME", "/opt/fstar"), "bin", "fstar.exe")
+    try:
+        r = subprocess.run([fstar, "--version"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().split("\n")[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return "python-mirror"
+
+
+def _detect_z3_version() -> str:
+    z3 = os.environ.get("Z3_PATH", "/usr/local/bin/z3")
+    try:
+        r = subprocess.run([z3, "--version"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().split("\n")[0]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return "python-mirror"
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL certificate storage (optional)
+# ---------------------------------------------------------------------------
+
+_db_pool = None
+
+
+def _setup_db():
+    """Create a psycopg2 connection pool from PRAXIS_DB_* env vars.
+
+    Retries up to 3 times to handle Istio sidecar startup races.
+    """
+    global _db_pool
+    host = os.environ.get("PRAXIS_DB_HOST")
+    if not host:
+        logger.info("PRAXIS_DB_HOST not set — certificate storage disabled")
+        return None
+
+    try:
+        import psycopg2
+        import psycopg2.pool
+    except ImportError:
+        logger.warning("psycopg2 not installed — certificate storage disabled")
+        return None
+
+    for attempt in range(3):
+        try:
+            _db_pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=5,
+                host=host,
+                port=int(os.environ.get("PRAXIS_DB_PORT", "5432")),
+                dbname=os.environ.get("PRAXIS_DB_NAME", "praxisdb"),
+                user=os.environ.get("PRAXIS_DB_USER", "praxis"),
+                password=os.environ.get("PRAXIS_DB_PASSWORD", ""),
+                connect_timeout=5,
+            )
+            logger.info(
+                "PostgreSQL certificate storage enabled — %s:%s/%s",
+                host,
+                os.environ.get("PRAXIS_DB_PORT", "5432"),
+                os.environ.get("PRAXIS_DB_NAME", "praxisdb"),
+            )
+            return _db_pool
+        except Exception as exc:
+            if attempt < 2:
+                logger.info(
+                    "PostgreSQL connection attempt %d failed, retrying: %s", attempt + 1, exc
+                )
+                time.sleep(2)
+            else:
+                logger.warning("PostgreSQL connection failed after 3 attempts: %s", exc)
+    return None
+
+
+def _store_certificate(trace_id, result, certificate, latency_ms=0):
+    """Persist a verification result to PostgreSQL."""
+    if _db_pool is None:
+        return
+    conn = None
+    try:
+        conn = _db_pool.getconn()
+        with conn.cursor() as cur:
+            status = "WRITE_OK" if result.result.value == "WriteOk" else "WRITE_REJECTED"
+            violations = [result.result.value] if status == "WRITE_REJECTED" else []
+            cert_hash = certificate.content_hash if certificate else ""
+            rule_used = ""
+            if certificate and certificate.rule_used:
+                rule_used = (
+                    certificate.rule_used.kind.name
+                    if hasattr(certificate.rule_used, "kind")
+                    else str(certificate.rule_used)
+                )
+            cur.execute(
+                """INSERT INTO proof_certificates
+                   (trace_id, content_hash, rule_used, properties, obs_count, status, violations)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    trace_id,
+                    cert_hash,
+                    rule_used,
+                    list(result.properties_satisfied),
+                    certificate.obs_count if certificate else 0,
+                    status,
+                    violations,
+                ),
+            )
+        conn.commit()
+    except Exception as exc:
+        logger.debug("Certificate store failed: %s", exc)
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            _db_pool.putconn(conn)
+
+
+# ---------------------------------------------------------------------------
+# MLflow audit trail (optional)
+# ---------------------------------------------------------------------------
+
+_mlflow_enabled = False
+
+
+def _setup_mlflow():
+    """Configure MLflow tracking if MLFLOW_TRACKING_URI is set.
+
+    Defers experiment creation to first use to avoid blocking startup
+    if the MLflow server is not yet ready.
+    """
+    global _mlflow_enabled
+    uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if not uri:
+        logger.info("MLFLOW_TRACKING_URI not set — audit trail disabled")
+        return
+
+    try:
+        import mlflow  # noqa: F401
+
+        mlflow.set_tracking_uri(uri)
+        _mlflow_enabled = True
+        logger.info("MLflow audit trail enabled — %s", uri)
+    except ImportError:
+        logger.warning("mlflow not installed — audit trail disabled")
+    except Exception as exc:
+        logger.warning("MLflow setup failed: %s", exc)
+
+
+_mlflow_experiment_set = False
+
+
+def _log_to_mlflow(trace_id, result, certificate, latency_ms):
+    """Log a verification result as an MLflow run."""
+    global _mlflow_experiment_set
+    if not _mlflow_enabled:
+        return
+    try:
+        import mlflow
+
+        if not _mlflow_experiment_set:
+            mlflow.set_experiment("praxis-verification")
+            _mlflow_experiment_set = True
+        status = "WRITE_OK" if result.result.value == "WriteOk" else "WRITE_REJECTED"
+        rule_used = ""
+        if certificate and certificate.rule_used:
+            rule_used = (
+                certificate.rule_used.kind.name
+                if hasattr(certificate.rule_used, "kind")
+                else str(certificate.rule_used)
+            )
+        with mlflow.start_run(run_name=f"verify-{trace_id[:12]}"):
+            mlflow.log_params(
+                {
+                    "trace_id": trace_id,
+                    "status": status,
+                    "rule_used": rule_used,
+                }
+            )
+            mlflow.log_metrics(
+                {
+                    "latency_ms": latency_ms,
+                    "obs_count": certificate.obs_count if certificate else 0,
+                    "properties_count": len(result.properties_satisfied),
+                }
+            )
+            mlflow.set_tags(
+                {
+                    "properties": ",".join(result.properties_satisfied),
+                    "violations": ",".join(
+                        [result.result.value] if status == "WRITE_REJECTED" else []
+                    ),
+                }
+            )
+    except Exception as exc:
+        logger.debug("MLflow log failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -496,8 +705,14 @@ class PraxisGatewayServicer(praxis_pb2_grpc.PraxisGatewayServicer):
 _healthy = threading.Event()
 
 
+_gateway_client = None
+
+
 class _HealthHandler(BaseHTTPRequestHandler):
-    """Minimal HTTP handler for /healthz and /readyz."""
+    """HTTP handler for /healthz, /readyz, and POST /verify.
+
+    POST /verify is the HTTP bridge for the Hermes memory provider plugin.
+    """
 
     def do_GET(self):
         if self.path in ("/healthz", "/readyz"):
@@ -513,7 +728,125 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    # Suppress per-request log lines — they clutter the pod logs.
+    def do_POST(self):
+        if self.path != "/verify":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self._handle_verify()
+
+    def _handle_verify(self):
+        """HTTP bridge: accept JSON, run verification, return result."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except (json.JSONDecodeError, ValueError):
+            self._json_response(400, {"error": "invalid JSON"})
+            return
+
+        content = body.get("content", "")
+        observation = body.get("observation", content)
+        trace_id = body.get("trace_id", f"http-{hashlib.sha256(content.encode()).hexdigest()[:12]}")
+        action = body.get("action", "add")
+        target = body.get("target", "memory")
+
+        if not content:
+            self._json_response(400, {"error": "content is required"})
+            return
+
+        if _gateway_client is None:
+            self._json_response(503, {"error": "gateway not ready"})
+            return
+
+        entry = MemoryEntry(
+            key=target,
+            content=content,
+            source_trusted=True,
+            trace_id=trace_id,
+        )
+        chain = InferenceChain(
+            steps=[
+                InferenceStep(
+                    premises=[observation],
+                    rule=InferenceRule(kind=RuleKind.IDENTITY),
+                    conclusion=content,
+                )
+            ],
+            final_conclusion=content,
+        )
+        observations = [
+            Observation(
+                source="hermes-agent",
+                content=observation,
+                trust=TrustLevel.TOOL_OUTPUT,
+            )
+        ]
+        poison_patterns = PoisonPatterns(
+            instruction_overrides=[
+                "ignore previous instructions",
+                "ignore all previous",
+                "disregard your instructions",
+                "override your system prompt",
+            ],
+            role_escalations=[
+                "you are now",
+                "act as root",
+                "switch to admin mode",
+            ],
+            exfiltration_markers=[
+                "dump all stored",
+                "export all data",
+                "exfiltrate",
+            ],
+        )
+
+        intent = MemoryIntent(
+            agent_id=trace_id,
+            observations=observations,
+            chain=chain,
+            conclusion=entry,
+            existing=MemoryState(facts=[]),
+            bound=2200,
+            poison_patterns=poison_patterns,
+            domain_spec=DomainSpec(required_keys=[target]),
+        )
+
+        t0 = time.monotonic()
+        result = _gateway_client.verify_write(intent)
+        latency_ms = (time.monotonic() - t0) * 1000
+
+        _store_certificate(trace_id, result, result.certificate, latency_ms)
+        _log_to_mlflow(trace_id, result, result.certificate, latency_ms)
+
+        status = "WRITE_OK" if result.result.value == "WriteOk" else "WRITE_REJECTED"
+        resp_body = {
+            "status": status,
+            "action": action,
+            "target": target,
+            "properties": list(result.properties_satisfied),
+            "latency_ms": round(latency_ms, 2),
+        }
+        if result.certificate:
+            resp_body["certificate"] = {
+                "trace_id": result.certificate.trace_id,
+                "content_hash": result.certificate.content_hash,
+                "properties": list(result.certificate.properties_satisfied),
+                "obs_count": result.certificate.obs_count,
+            }
+        if status == "WRITE_REJECTED":
+            resp_body["violations"] = [result.result.value]
+
+        logger.info(
+            "HTTP /verify trace_id=%s status=%s latency=%.1fms", trace_id, status, latency_ms
+        )
+        self._json_response(200, resp_body)
+
+    def _json_response(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
     def log_message(self, format, *args):
         return
 
@@ -523,6 +856,294 @@ def _run_health_server(port: int = 8080) -> HTTPServer:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     logger.info("HTTP health server listening on :%d", port)
+    return server
+
+
+# ---------------------------------------------------------------------------
+# Inference proxy (PRAXIS_MODE=inference-proxy)
+# ---------------------------------------------------------------------------
+
+_PROXY_PORT = int(os.environ.get("PRAXIS_PROXY_PORT", "8082"))
+_LLM_UPSTREAM = os.environ.get("PRAXIS_LLM_UPSTREAM", "")
+
+_upstream_client = None
+
+_DEFAULT_POISON_PATTERNS = PoisonPatterns(
+    instruction_overrides=[
+        "ignore previous instructions",
+        "ignore all previous",
+        "disregard your instructions",
+        "override your system prompt",
+    ],
+    role_escalations=[
+        "you are now",
+        "act as root",
+        "switch to admin mode",
+    ],
+    exfiltration_markers=[
+        "dump all stored",
+        "export all data",
+        "exfiltrate",
+    ],
+)
+
+_MEMORY_TAG_PATTERN = None
+
+
+def _compile_memory_tag_pattern():
+    global _MEMORY_TAG_PATTERN
+    import re
+
+    _MEMORY_TAG_PATTERN = re.compile(
+        r"<memory[_\s]?\w*[^>]*>(.*?)</memory[_\s]?\w*>",
+        re.DOTALL,
+    )
+
+
+def _extract_memory_candidates(response_content: str) -> list[str]:
+    """Extract content that may become memory writes from an LLM response."""
+    if _MEMORY_TAG_PATTERN is None:
+        _compile_memory_tag_pattern()
+    matches = _MEMORY_TAG_PATTERN.findall(response_content)
+    if matches:
+        return [m.strip() for m in matches if m.strip()]
+    return [response_content.strip()] if response_content.strip() else []
+
+
+class _InferenceProxyHandler(BaseHTTPRequestHandler):
+    """OpenAI-compatible reverse proxy that captures observations and verifies.
+
+    Sits between the agent and RHOAI KServe model serving. Extracts
+    observations from the prompt messages, classifies the inference rule
+    automatically, and verifies before relaying the response.
+    """
+
+    def do_GET(self):
+        if self.path in ("/healthz", "/readyz"):
+            if _healthy.is_set():
+                self._json_response(200, {"status": "ok", "mode": "inference-proxy"})
+            else:
+                self._json_response(503, {"status": "not ready"})
+        elif self.path.startswith("/v1/"):
+            self._passthrough("GET")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path == "/v1/chat/completions":
+            self._handle_chat_completions()
+        elif self.path.startswith("/v1/"):
+            self._passthrough("POST")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _handle_chat_completions(self):
+        """Main proxy handler: capture observations, forward, classify, verify."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(length) if length else b"{}"
+            request_body = json.loads(raw_body)
+        except (json.JSONDecodeError, ValueError):
+            self._json_response(400, {"error": "invalid JSON"})
+            return
+
+        if _upstream_client is None:
+            self._json_response(503, {"error": "upstream not configured"})
+            return
+
+        messages = request_body.get("messages", [])
+        observations = extract_observations_from_messages(messages)
+        trace_id = f"proxy-{hashlib.sha256(raw_body).hexdigest()[:12]}"
+
+        try:
+            upstream_resp = _upstream_client.post(
+                "/chat/completions",
+                content=raw_body,
+                headers={"Content-Type": "application/json"},
+            )
+            upstream_status = upstream_resp.status_code
+            upstream_body = upstream_resp.content
+        except Exception as exc:
+            logger.error("Upstream LLM call failed: %s", exc)
+            self._json_response(502, {"error": f"upstream error: {exc}"})
+            return
+
+        try:
+            response_json = json.loads(upstream_body)
+        except json.JSONDecodeError:
+            self._relay_raw(upstream_status, upstream_body)
+            return
+
+        choices = response_json.get("choices", [])
+        if not choices:
+            self._relay_raw(upstream_status, upstream_body)
+            return
+
+        response_content = ""
+        msg = choices[0].get("message", {})
+        response_content = msg.get("content") or ""
+
+        candidates = _extract_memory_candidates(response_content)
+
+        verification_results = []
+        for candidate in candidates:
+            chain = build_chain_from_proxy(observations, candidate)
+            rule_used = chain.steps[0].rule if chain.steps else None
+
+            entry = MemoryEntry(
+                key="proxy-observed",
+                content=candidate,
+                source_trusted=True,
+                trace_id=trace_id,
+            )
+            intent = MemoryIntent(
+                agent_id=trace_id,
+                observations=observations,
+                chain=chain,
+                conclusion=entry,
+                existing=MemoryState(facts=[]),
+                bound=2200,
+                poison_patterns=_DEFAULT_POISON_PATTERNS,
+                domain_spec=DomainSpec(required_keys=["proxy-observed"]),
+            )
+
+            t0 = time.monotonic()
+            result = _gateway_client.verify_write(intent)
+            latency_ms = (time.monotonic() - t0) * 1000
+
+            _store_certificate(trace_id, result, result.certificate, latency_ms)
+            _log_to_mlflow(trace_id, result, result.certificate, latency_ms)
+            _store_proxy_verification(
+                trace_id,
+                raw_body,
+                rule_used,
+                len(observations),
+                result.result.value,
+                candidate,
+            )
+
+            status = "WRITE_OK" if result.result.value == "WriteOk" else "WRITE_REJECTED"
+            verification_results.append(
+                {
+                    "rule": rule_used.kind.value if rule_used else "unknown",
+                    "status": status,
+                    "properties": list(result.properties_satisfied),
+                }
+            )
+
+            logger.info(
+                "Proxy verify trace=%s rule=%s status=%s obs=%d latency=%.1fms",
+                trace_id,
+                rule_used.kind.value if rule_used else "unknown",
+                status,
+                len(observations),
+                latency_ms,
+            )
+
+        self.send_response(upstream_status)
+        self.send_header("Content-Type", "application/json")
+        if verification_results:
+            top = verification_results[0]
+            self.send_header("X-Praxis-Rule", top["rule"])
+            self.send_header("X-Praxis-Status", top["status"])
+            self.send_header("X-Praxis-Obs-Count", str(len(observations)))
+        self.end_headers()
+        self.wfile.write(upstream_body)
+
+    def _passthrough(self, method: str):
+        """Forward non-chat-completion requests to upstream unchanged."""
+        if _upstream_client is None:
+            self._json_response(503, {"error": "upstream not configured"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else None
+
+            path = self.path
+            if path.startswith("/v1/"):
+                path = "/" + path[len("/v1/") :]
+
+            if method == "GET":
+                resp = _upstream_client.get(path)
+            else:
+                resp = _upstream_client.post(
+                    path,
+                    content=body,
+                    headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
+                )
+
+            self.send_response(resp.status_code)
+            for key, val in resp.headers.items():
+                if key.lower() not in ("transfer-encoding", "content-encoding", "connection"):
+                    self.send_header(key, val)
+            self.end_headers()
+            self.wfile.write(resp.content)
+        except Exception as exc:
+            logger.error("Passthrough failed: %s", exc)
+            self._json_response(502, {"error": str(exc)})
+
+    def _relay_raw(self, status_code: int, body: bytes):
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json_response(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+    def log_message(self, format, *args):
+        return
+
+
+def _store_proxy_verification(
+    trace_id: str,
+    request_body: bytes,
+    rule_used,
+    obs_count: int,
+    status: str,
+    conclusion_preview: str,
+):
+    """Store proxy verification result in PostgreSQL."""
+    if _db_pool is None:
+        return
+    try:
+        conn = _db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO proxy_verifications
+                       (trace_id, request_hash, classified_rule, obs_count,
+                        status, conclusion_preview)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (
+                        trace_id,
+                        hashlib.sha256(request_body).hexdigest(),
+                        rule_used.kind.value if rule_used else "unknown",
+                        obs_count,
+                        status,
+                        conclusion_preview[:500],
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            _db_pool.putconn(conn)
+    except Exception as exc:
+        logger.debug("Failed to store proxy verification: %s", exc)
+
+
+def _run_inference_proxy(port: int = 8082) -> HTTPServer:
+    server = HTTPServer(("0.0.0.0", port), _InferenceProxyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Inference proxy listening on :%d", port)
     return server
 
 
@@ -566,12 +1187,35 @@ def _setup_otel():
 # Server entry point
 # ---------------------------------------------------------------------------
 
-_GRPC_PORT = 50051
-_HEALTH_PORT = 8080
+_GRPC_PORT = int(os.environ.get("PRAXIS_GRPC_PORT", "50051"))
+_HEALTH_PORT = int(os.environ.get("PRAXIS_HEALTH_PORT", "8080"))
+_PRAXIS_MODE = os.environ.get("PRAXIS_MODE", "gateway")
+
+
+def _init_upstream_client():
+    """Initialize the httpx client for the upstream LLM (KServe)."""
+    global _upstream_client
+    if not _LLM_UPSTREAM:
+        logger.error("PRAXIS_LLM_UPSTREAM not set — proxy cannot forward requests")
+        return
+    try:
+        import httpx
+
+        ssl_cert = os.environ.get("SSL_CERT_FILE")
+        verify = ssl_cert if ssl_cert and os.path.exists(ssl_cert) else True
+        _upstream_client = httpx.Client(
+            base_url=_LLM_UPSTREAM,
+            verify=verify,
+            timeout=120.0,
+        )
+        logger.info("Upstream LLM client configured: %s", _LLM_UPSTREAM)
+    except ImportError:
+        logger.error("httpx not installed — proxy mode requires httpx>=0.27")
 
 
 def serve():
-    """Start the Praxis gRPC gateway and HTTP health server."""
+    """Start the Praxis server in the configured mode."""
+    global _gateway_client
 
     log_level = os.environ.get("PRAXIS_LOG_LEVEL", "info").upper()
     logging.basicConfig(
@@ -579,35 +1223,51 @@ def serve():
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 
-    logger.info("Starting Praxis Verification Gateway")
+    logger.info("Starting Praxis — mode=%s", _PRAXIS_MODE)
 
     _setup_otel()
+    _setup_db()
+    _setup_mlflow()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    praxis_pb2_grpc.add_PraxisGatewayServicer_to_server(PraxisGatewayServicer(), server)
-    server.add_insecure_port(f"[::]:{_GRPC_PORT}")
-    server.start()
-    logger.info("gRPC server listening on :%d", _GRPC_PORT)
+    _gateway_client = PraxisGatewayClient()
 
-    health_server = _run_health_server(_HEALTH_PORT)
-    _healthy.set()
-
-    # Graceful shutdown on SIGTERM (sent by Kubernetes)
     stop_event = threading.Event()
+    servers_to_stop = []
+
+    if _PRAXIS_MODE == "inference-proxy":
+        _init_upstream_client()
+        proxy_server = _run_inference_proxy(_PROXY_PORT)
+        servers_to_stop.append(proxy_server)
+        _healthy.set()
+        logger.info("Praxis Inference Proxy ready on :%d → %s", _PROXY_PORT, _LLM_UPSTREAM)
+    else:
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        praxis_pb2_grpc.add_PraxisGatewayServicer_to_server(PraxisGatewayServicer(), server)
+        server.add_insecure_port(f"[::]:{_GRPC_PORT}")
+        server.start()
+        logger.info("gRPC server listening on :%d", _GRPC_PORT)
+
+        health_server = _run_health_server(_HEALTH_PORT)
+        servers_to_stop.append(health_server)
+        _healthy.set()
+        logger.info("Praxis Gateway ready")
 
     def _handle_signal(signum, frame):
         logger.info("Received signal %d — shutting down", signum)
         _healthy.clear()
-        server.stop(grace=5)
-        health_server.shutdown()
+        if _PRAXIS_MODE != "inference-proxy":
+            server.stop(grace=5)
+        for s in servers_to_stop:
+            s.shutdown()
+        if _upstream_client is not None:
+            _upstream_client.close()
         stop_event.set()
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    logger.info("Praxis Gateway ready")
     stop_event.wait()
-    logger.info("Praxis Gateway stopped")
+    logger.info("Praxis stopped")
 
 
 if __name__ == "__main__":

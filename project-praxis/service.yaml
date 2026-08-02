@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: praxis-gateway
-  namespace: catalystlab-shared
+  namespace: praxis-verified
   labels:
     app: praxis-gateway
     component: verification

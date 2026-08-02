@@ -13,6 +13,10 @@ out/
 # Config with real values
 config/praxis-config.yaml
 
+# Generated proto stubs
+proto/*_pb2.py
+proto/*_pb2_grpc.py
+
 # Python
 .venv/
 __pycache__/
