@@ -42,8 +42,6 @@ type tool_evidence = {
 noeq
 type derivation_evidence = {
   de_domain_rule_id: string;
-  de_rule_desc: string;
-  de_confidence: nat;
 }
 
 (* --- Inference Rule Catalog --- *)

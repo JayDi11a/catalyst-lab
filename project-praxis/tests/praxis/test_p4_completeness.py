@@ -96,11 +96,11 @@ class TestCriticalObservationCoverage:
     @pytest.mark.p4
     def test_multiple_critical_all_covered(self, gateway: PraxisGatewayClient):
         obs = [
-            "GPU utilization at 90%",
-            "latency p99 = 45ms",
+            "GPU utilization at 90% latency",
+            "latency p99 = 45ms error",
             "error rate 0.1%",
         ]
-        content = "GPU utilization at 90%latency p99 = 45mserror rate 0.1%"
+        content = "GPU utilization at 90% latency p99 = 45ms error rate 0.1%"
         intent = _make_completeness_intent(
             obs_contents=obs,
             conclusion_content=content,

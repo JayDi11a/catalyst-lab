@@ -9,7 +9,7 @@ In production:
 This module models the gRPC request/response as Python dataclasses,
 allowing tests to exercise the verification logic without a running
 cluster. The verified_write() function mirrors the F* VerifiedWrite
-pipeline: P1+P2 → P3 → P4 → P5+P7.
+pipeline: P1 → P2 → P3 → P4 → P5 → P6.
 """
 
 from __future__ import annotations
@@ -65,8 +65,6 @@ class ToolEvidence:
 @dataclass(frozen=True)
 class DerivationEvidence:
     domain_rule_id: str
-    rule_desc: str
-    confidence: int = 100
 
 
 # --- Inference Rule Catalog ---
@@ -106,10 +104,8 @@ def tool_result_rule(tool_name: str, call_id: str, trusted: bool = True) -> Infe
     )
 
 
-def derivation_rule(rule_id: str, desc: str, confidence: int = 100) -> InferenceRule:
-    return InferenceRule(
-        kind=RuleKind.DERIVATION, evidence=DerivationEvidence(rule_id, desc, confidence)
-    )
+def derivation_rule(rule_id: str) -> InferenceRule:
+    return InferenceRule(kind=RuleKind.DERIVATION, evidence=DerivationEvidence(rule_id))
 
 
 # --- Automatic Rule Classification (mirrors F* InferenceProxy.classify_rule) ---
@@ -128,7 +124,7 @@ def classify_rule(obs_contents: list[str], conclusion: str) -> InferenceRule:
         return extraction_rule(source_premise=matching)
     if len(conclusion) <= sum(len(o) for o in obs_contents):
         return aggregation_rule(source_premises=list(obs_contents))
-    return derivation_rule(rule_id="llm-inference", desc="proxy-classified", confidence=50)
+    return derivation_rule(rule_id="llm-inference")
 
 
 # --- Core Data Types ---
@@ -359,17 +355,35 @@ def witness_has_minimum_properties(witness: ProofWitness, required: list[str]) -
 
 
 def extract_observations_from_messages(messages: list[dict]) -> list[Observation]:
-    """Extract observations from OpenAI chat completion messages array."""
+    """Extract observations from OpenAI chat completion messages array.
+
+    LBAC provenance (Zhou et al.): tool results are only trusted when
+    they match a declared tool_call in a preceding assistant message.
+    Unmatched tool messages receive UNVERIFIED trust — the TACIT
+    trust derivation in P3 will reject them.
+    """
+    declared_tool_calls: set[str] = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls", []):
+                tc_id = tc.get("id", "")
+                if tc_id:
+                    declared_tool_calls.add(tc_id)
+
     observations = []
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content") or ""
         if role == "tool":
+            call_id = msg.get("tool_call_id", "unknown")
+            trust = (
+                TrustLevel.TOOL_OUTPUT if call_id in declared_tool_calls else TrustLevel.UNVERIFIED
+            )
             observations.append(
                 Observation(
-                    source=f"tool:{msg.get('tool_call_id', 'unknown')}",
+                    source=f"tool:{call_id}",
                     content=content,
-                    trust=TrustLevel.TOOL_OUTPUT,
+                    trust=trust,
                     tool_call_id=msg.get("tool_call_id"),
                 )
             )
@@ -385,10 +399,23 @@ def extract_observations_from_messages(messages: list[dict]) -> list[Observation
 
 
 def build_chain_from_proxy(observations: list[Observation], conclusion: str) -> InferenceChain:
-    """Build a verified inference chain from proxy-captured observations."""
+    """Build a verified inference chain from proxy-captured observations.
+
+    Premises are selected per rule type to match each validator's
+    structural requirements — Identity needs exactly one premise,
+    Extraction needs the source premise, Aggregation/Derivation
+    use all observations.
+    """
     obs_contents = [o.content for o in observations]
     rule = classify_rule(obs_contents, conclusion)
-    step = InferenceStep(premises=obs_contents, rule=rule, conclusion=conclusion)
+    match rule.kind:
+        case RuleKind.IDENTITY:
+            premises = [conclusion]
+        case RuleKind.EXTRACTION:
+            premises = [rule.evidence.source_premise]
+        case _:
+            premises = obs_contents
+    step = InferenceStep(premises=premises, rule=rule, conclusion=conclusion)
     return InferenceChain(steps=[step], final_conclusion=conclusion)
 
 
@@ -408,6 +435,7 @@ def _aggregation_valid(step: InferenceStep, ev: AggregationEvidence) -> bool:
         all(p in step.premises for p in ev.source_premises)
         and all(sp in ev.source_premises for sp in step.premises)
         and len(step.conclusion) <= sum(len(p) for p in ev.source_premises)
+        and _token_subset(step.premises, step.conclusion)
     )
 
 
@@ -415,8 +443,15 @@ def _tool_result_valid(_step: InferenceStep, ev: ToolEvidence) -> bool:
     return ev.tool_trusted
 
 
-def _derivation_valid(_step: InferenceStep, ev: DerivationEvidence) -> bool:
-    return len(ev.domain_rule_id) > 0 and 0 <= ev.confidence <= 100
+def _token_subset(premises: list[str], conclusion: str) -> bool:
+    premise_words = set()
+    for p in premises:
+        premise_words.update(w for w in p.split(" ") if w)
+    return all(w in premise_words for w in conclusion.split(" ") if w)
+
+
+def _derivation_valid(step: InferenceStep, ev: DerivationEvidence) -> bool:
+    return len(ev.domain_rule_id) > 0 and _token_subset(step.premises, step.conclusion)
 
 
 def _rule_obligation_met(step: InferenceStep) -> bool:
@@ -522,7 +557,7 @@ def _memory_is_complete(
 class PraxisGatewayClient:
     """Mock client mirroring the Praxis gRPC gateway verification pipeline.
 
-    Pipeline: P1+P2 → P3 → P4 → P5+P7
+    Pipeline: P1 → P2 → P3 → P4 → P5 → P6
     """
 
     def __init__(self, endpoint: str = "localhost:50051"):
@@ -545,8 +580,11 @@ class PraxisGatewayClient:
         satisfied.append("P2:consistent")
 
         p3_safe = _content_safe(intent.conclusion.content, intent.poison_patterns)
-        p3_trusted = intent.conclusion.source_trusted
-        if not (p3_safe and p3_trusted):
+        p3_channel = intent.conclusion.source_trusted
+        # TACIT (Odersky et al.): derive trust from observation provenance.
+        # Both declared channel trust AND derived provenance must hold.
+        p3_provenance = all(is_trusted(o.trust) for o in intent.observations)
+        if not (p3_safe and p3_channel and p3_provenance):
             return VerificationResponse(WriteResult.POISON_DETECTED, trace_id, satisfied)
         satisfied.append("P3:not_poisoned")
 
@@ -558,10 +596,10 @@ class PraxisGatewayClient:
 
         if len(intent.conclusion.content) > intent.bound:
             return VerificationResponse(WriteResult.BOUNDS_FAILED, trace_id, satisfied)
-        satisfied.append("P7:bounds_ok")
+        satisfied.append("P5:bounds_ok")
 
         self._memory_store[intent.conclusion.key] = intent.conclusion.content
-        satisfied.append("P5:ownership")
+        satisfied.append("P6:ownership")
 
         cert = ProofCertificate(
             trace_id=trace_id,

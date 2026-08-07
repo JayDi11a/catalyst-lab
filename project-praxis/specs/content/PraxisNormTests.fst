@@ -87,9 +87,21 @@ let _ = assert_norm (
   aggregation_valid
     ({ premises = ["GPU at 87%"; "latency 45ms"];
        rule = RuleAggregation ({ agg_source_premises = ["GPU at 87%"; "latency 45ms"] });
-       step_conclusion = "GPU 87% lat 45ms" })
+       step_conclusion = "GPU 87% latency 45ms" })
     ({ agg_source_premises = ["GPU at 87%"; "latency 45ms"] })
   = true)
+
+(* Novel tokens "service" and "degraded" are NOT in premises —
+   rejected by LBAC IFC token containment even though length
+   is within bound. Same principle as derivation_valid. *)
+
+let _ = assert_norm (
+  aggregation_valid
+    ({ premises = ["latency > 200ms three times"];
+       rule = RuleAggregation ({ agg_source_premises = ["latency > 200ms three times"] });
+       step_conclusion = "service degraded" })
+    ({ agg_source_premises = ["latency > 200ms three times"] })
+  = false)
 
 let _ = assert_norm (
   aggregation_valid
@@ -127,20 +139,37 @@ let _ = assert_norm (
    Python: test_p1_semantic.py::TestDerivationRule
    ────────────────────────────────────────────────────────────────── *)
 
+(* Derivation with token containment: all conclusion tokens must
+   appear in premises. "latency three times 200ms" uses only tokens
+   from "latency 200ms three times". *)
+
+let _ = assert_norm (
+  derivation_valid
+    ({ premises = ["latency 200ms three times"];
+       rule = RuleDerivation ({ de_domain_rule_id = "sli-breach" });
+       step_conclusion = "latency three times 200ms" })
+    ({ de_domain_rule_id = "sli-breach" })
+  = true)
+
+(* Novel tokens "service" and "degraded" are NOT in the premise —
+   rejected even with a valid rule ID. This closes the Derivation
+   gap: hallucinated content cannot introduce information not
+   present in the observations (LBAC information flow principle). *)
+
 let _ = assert_norm (
   derivation_valid
     ({ premises = ["latency > 200ms three times"];
-       rule = RuleDerivation ({ de_domain_rule_id = "sli-breach"; de_rule_desc = "3 SLI violations"; de_confidence = 90 });
+       rule = RuleDerivation ({ de_domain_rule_id = "sli-breach" });
        step_conclusion = "service degraded" })
-    ({ de_domain_rule_id = "sli-breach"; de_rule_desc = "3 SLI violations"; de_confidence = 90 })
-  = true)
+    ({ de_domain_rule_id = "sli-breach" })
+  = false)
 
 let _ = assert_norm (
   derivation_valid
     ({ premises = ["data"];
-       rule = RuleDerivation ({ de_domain_rule_id = ""; de_rule_desc = "no rule"; de_confidence = 50 });
-       step_conclusion = "conclusion" })
-    ({ de_domain_rule_id = ""; de_rule_desc = "no rule"; de_confidence = 50 })
+       rule = RuleDerivation ({ de_domain_rule_id = "" });
+       step_conclusion = "data" })
+    ({ de_domain_rule_id = "" })
   = false)
 
 

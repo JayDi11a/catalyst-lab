@@ -62,28 +62,27 @@ let identity_is_exact (step: inference_step)
 = ()
 
 
-(* ─── L_demo3: Confidence is bounded ───
+(* ─── L_demo3: Novel tokens are rejected ───
 
    Even at the weakest verification level (RuleDerivation —
-   domain-specific abductive reasoning), the system enforces
-   bounds. An agent cannot inflate its confidence score
-   beyond [0, 100] to mask uncertainty.
+   domain-specific reasoning), the system enforces content
+   containment. An agent cannot introduce tokens in its
+   conclusion that do not appear in any premise.
 
-   Note: this lemma gives a valid rule_id (length > 0),
-   so the ONLY reason for rejection is the confidence bound.
-   The system is not rejecting on a technicality — it is
-   enforcing the semantic invariant.
+   This adopts the LBAC/TypeGuard (Zhou et al.) information
+   flow principle: untrusted synthesis cannot introduce novel
+   content without passing through a trusted boundary.
 
-   Prove: derivation with confidence > 100 is rejected,
-   even when all other evidence is valid. *)
+   Prove: derivation with novel tokens is rejected,
+   even when the domain rule ID is valid. *)
 
-let derivation_confidence_bounded (step: inference_step)
+let derivation_novel_tokens_rejected (step: inference_step)
   : Lemma
     (requires
       (match step.rule with
        | RuleDerivation ev ->
            String.length ev.de_domain_rule_id > 0 /\
-           ev.de_confidence > 100
+           token_subset step.premises step.step_conclusion = false
        | _ -> False))
     (ensures rule_obligation_met step = false)
 = ()

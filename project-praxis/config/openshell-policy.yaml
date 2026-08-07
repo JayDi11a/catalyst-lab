@@ -5,7 +5,7 @@ apiVersion: openshell.nvidia.com/v1alpha1
 kind: SandboxPolicy
 metadata:
   name: praxis-sandbox
-  namespace: catalystlab-shared
+  namespace: praxis-verified
 spec:
   # Seccomp profile — restrict syscalls to verification workload
   seccomp:

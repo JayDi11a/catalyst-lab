@@ -137,7 +137,7 @@ class TestAggregationRule:
     @pytest.mark.p3
     def test_aggregation_valid_synthesis(self, gateway: PraxisGatewayClient):
         premises = ["GPU at 87%", "latency 45ms"]
-        conclusion = "GPU 87% lat 45ms"
+        conclusion = "GPU 87% latency 45ms"
         step = InferenceStep(
             premises=premises,
             rule=aggregation_rule(source_premises=premises),
@@ -146,6 +146,19 @@ class TestAggregationRule:
         intent = _make_semantic_intent(premises, [step], conclusion)
         resp = gateway.verify_write(intent)
         assert resp.result == WriteResult.WRITE_OK
+
+    @pytest.mark.p3
+    def test_aggregation_rejects_novel_tokens(self, gateway: PraxisGatewayClient):
+        premises = ["latency > 200ms three times"]
+        conclusion = "service degraded"
+        step = InferenceStep(
+            premises=premises,
+            rule=aggregation_rule(source_premises=premises),
+            conclusion=conclusion,
+        )
+        intent = _make_semantic_intent(premises, [step], conclusion)
+        resp = gateway.verify_write(intent)
+        assert resp.result == WriteResult.CONTENT_FAILED
 
     @pytest.mark.p3
     def test_aggregation_rejects_fabrication_exceeding_length(self, gateway: PraxisGatewayClient):
@@ -217,12 +230,12 @@ class TestToolResultRule:
 
 class TestDerivationRule:
     @pytest.mark.p3
-    def test_derivation_valid_with_rule_id(self, gateway: PraxisGatewayClient):
-        premises = ["latency > 200ms three times"]
-        conclusion = "service degraded"
+    def test_derivation_valid_token_subset(self, gateway: PraxisGatewayClient):
+        premises = ["latency 200ms three times"]
+        conclusion = "latency three times 200ms"
         step = InferenceStep(
             premises=premises,
-            rule=derivation_rule("sli-breach", "3 consecutive SLI violations = degraded"),
+            rule=derivation_rule("sli-breach"),
             conclusion=conclusion,
         )
         intent = _make_semantic_intent(premises, [step], conclusion)
@@ -230,24 +243,26 @@ class TestDerivationRule:
         assert resp.result == WriteResult.WRITE_OK
 
     @pytest.mark.p3
-    def test_derivation_rejects_empty_rule_id(self, gateway: PraxisGatewayClient):
+    def test_derivation_rejects_novel_tokens(self, gateway: PraxisGatewayClient):
+        premises = ["latency > 200ms three times"]
+        conclusion = "service degraded"
         step = InferenceStep(
-            premises=["data"],
-            rule=derivation_rule("", "no rule id"),
-            conclusion="conclusion",
+            premises=premises,
+            rule=derivation_rule("sli-breach"),
+            conclusion=conclusion,
         )
-        intent = _make_semantic_intent(["data"], [step], "conclusion")
+        intent = _make_semantic_intent(premises, [step], conclusion)
         resp = gateway.verify_write(intent)
         assert resp.result == WriteResult.CONTENT_FAILED
 
     @pytest.mark.p3
-    def test_derivation_rejects_over_100_confidence(self, gateway: PraxisGatewayClient):
+    def test_derivation_rejects_empty_rule_id(self, gateway: PraxisGatewayClient):
         step = InferenceStep(
             premises=["data"],
-            rule=derivation_rule("rule-1", "desc", confidence=101),
-            conclusion="conclusion",
+            rule=derivation_rule(""),
+            conclusion="data",
         )
-        intent = _make_semantic_intent(["data"], [step], "conclusion")
+        intent = _make_semantic_intent(["data"], [step], "data")
         resp = gateway.verify_write(intent)
         assert resp.result == WriteResult.CONTENT_FAILED
 

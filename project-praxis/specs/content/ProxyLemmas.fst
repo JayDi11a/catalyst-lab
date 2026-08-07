@@ -148,9 +148,9 @@ let novel_content_not_identity (messages: list chat_message) (conclusion: string
 
    If all messages are system or assistant messages (no tool or
    user input), there are zero observations. Any non-empty
-   conclusion is then classified as RuleDerivation with confidence
-   50 — the proxy cannot claim identity, extraction, or aggregation
-   without evidence.
+   conclusion is then classified as RuleDerivation — the proxy
+   cannot claim identity, extraction, or aggregation without
+   evidence.
 
    This is the proxy-level analog of L5 (ruleless_derivation_rejected):
    the proxy ensures that evidence-free conclusions are always

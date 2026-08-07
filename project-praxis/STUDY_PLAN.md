@@ -1,397 +1,356 @@
-# Praxis Study Plan — Preparing for Coblenz
+# Praxis — Coblenz Meeting Prep
 
-4 days, ~2-3 hours each. Each day builds on the previous.
-After each day you should be able to explain that layer
-without looking at notes.
+Today's meeting. This doc is structured as a talk outline
+with anticipated questions and honest gaps.
+
+## The One-Sentence Pitch
+
+Praxis prevents hallucination persistence loops by proving
+that no inference rule — from Identity (strongest) through
+Derivation (weakest) — allows an agent to introduce
+information not present in its observations.
 
 ## What Coblenz Will Care About
 
-His group sits at usable PL + formal verification. They'll ask:
+His group does usable PL + formal verification. They'll ask:
 
-1. **"What are you actually proving?"** — They want the precise
-   property statements, not hand-waves. Know the ensures clauses.
-2. **"Why these properties?"** — What threat model justifies
-   these specific invariants? Why is string equality the right
-   notion of identity, not semantic similarity?
-3. **"What's the trusted computing base?"** — What do you NOT
-   verify? Where are the assumptions? They respect honest gaps
-   more than overclaims.
-4. **"Could a developer actually use this?"** — Usable PL lens.
-   How much does an agent developer need to understand about
-   F* to benefit from Praxis?
+1. **"What are you actually proving?"** — The ensures
+   clauses. Know them cold.
+2. **"Why these properties?"** — The threat model.
+3. **"What's the trusted computing base?"** — What you
+   DON'T verify. They respect honest gaps over overclaims.
+4. **"Could a developer actually use this?"** — Usable PL
+   lens. How much F* does an agent developer need to know?
 
 ---
 
-## Day 1: The Threat Model and the Pipeline Shape
+## Part 1: The Problem (2 minutes)
 
-**Goal**: Explain the hallucination persistence loop problem
-and the pipeline that solves it without touching F* syntax.
+**The hallucination persistence loop:**
 
-### Study
+1. Agent observes "The sky is blue"
+2. Agent hallucinates "The economy will crash"
+3. Agent stores that to memory
+4. Next turn, reads it back as established fact
+5. Reasons from it, stores more fabrications
+6. Compounding error across turns
 
-Read nothing today except this:
+**Step 3 is the intervention point.** If the hallucination
+never reaches durable memory, the loop can't start.
 
-- `tests/praxis/gateway_client.py` lines 522-574
-  (PraxisGatewayClient.verify_write)
+**The threat model:** The agent is the adversary. Not an
+external attacker — the agent itself. It may hallucinate
+(unintentional) or be manipulated via prompt injection
+(intentional). Praxis treats the agent's conclusions as
+untrusted until proven.
 
-That's 50 lines. It's the whole pipeline in Python. Read it
-until you can answer these from memory:
+---
 
-### Practice Questions (answer out loud)
+## Part 2: The Pipeline (2 minutes)
 
-1. "What is a hallucination persistence loop?"
-
-   Your answer should include: agent hallucinates → stores in
-   memory → reads it back next turn → treats it as established
-   fact → reasons from it → stores more fabrications →
-   compounding error across turns.
-
-2. "Walk me through what happens when an agent tries to write
-   to memory."
-
-   Your answer should include the 5 checks IN ORDER:
-   - P1: Is the inference chain well-formed? (grounded in
-     observations, each step semantically valid)
-   - P2: Does this contradict existing memory?
-   - P3: Is the content free of injection patterns?
-   - P4: Has the agent accounted for all critical observations?
-   - P7: Does the content fit within the size bound?
-
-   And: on ANY failure, memory is unchanged.
-
-3. "Why this order?"
-
-   P1 before P3 because: a fabricated chain is cheaper to
-   detect than a poison scan. Also, if the chain is invalid,
-   the content never reaches the poison scanner — defense
-   in depth.
-
-4. "What's the threat model?"
-
-   The agent is the adversary. Not the user, not an external
-   attacker — the agent itself. It may hallucinate (unintentional)
-   or be manipulated via prompt injection (intentional). Praxis
-   treats the agent's conclusions as untrusted until proven.
-
-### What You Should Be Able to Draw
-
-A box diagram:
+Every memory write passes through 5 gates in order.
+Any failure → memory unchanged. All pass → write + certificate.
 
 ```text
 Observations → [P1: chain valid?] → [P2: consistent?]
-  → [P3: not poisoned?] → [P4: complete?] → [P7: bounded?]
-  → Write + Certificate
+  → [P3: not poisoned?] → [P4: complete?] → [P5: bounded?]
+  → Write + Certificate (P6: ownership)
 ```
 
-With arrows showing: any failure → memory unchanged.
+- **P1**: Is the inference chain well-formed? Every step
+  grounded in observations, every step semantically valid
+  for its claimed rule.
+- **P2**: Does this contradict existing memory?
+- **P3**: Is the content free of injection patterns?
+  Is the source trusted (declared channel trust)?
+  Are all observations provenance-trusted (TACIT derived trust)?
+- **P4**: Has the agent accounted for all critical
+  observations per the domain spec?
+- **P5**: Does the content fit within the size bound?
+- **P6**: Ownership — the write executes, memory updated.
+
+**Key**: P1 is the hallucination gate. P2-P7 are defense
+in depth.
+
+**Code**: `tests/praxis/gateway_client.py`
+(PraxisGatewayClient.verify_write)
 
 ---
 
-## Day 2: The Core Gate — chain_well_formed
+## Part 3: The Core Gate — chain_well_formed (3 minutes)
 
-**Goal**: Explain exactly how chain_well_formed prevents
-hallucination, function by function, and what the F*
-ensures clause guarantees.
+`chain_well_formed` walks the inference chain step by step:
 
-### Study — Core Gate
+1. `known` starts as the observation contents (ground truth)
+2. For each step: are all premises in `known`? (grounding)
+3. Does the step satisfy its rule's obligation? (semantic)
+4. If both pass, add the step's conclusion to `known`
+5. After all steps: does the last conclusion match the
+   chain's declared final conclusion?
 
-Read these files in this order. For each function, write
-down in your own words: (a) what it takes, (b) what it
-returns, (c) what property it checks.
+**The verification strength spectrum** (each rule's
+obligation):
 
-1. `specs/content/PraxisPredicates.fst` lines 19-23
-   (step_premises_valid)
+| Rule | Obligation | Containment |
+|------|-----------|-------------|
+| Identity | conclusion = single premise | Exact match |
+| Extraction | conclusion ⊆ source premise | Substring |
+| Aggregation | \|conclusion\| ≤ Σ\|premises\| + **token containment** | Length + token subset |
+| ToolResult | tool is trusted | Delegated trust |
+| Derivation | rule_id non-empty + **token containment** | Token subset |
 
-2. `specs/content/PraxisPredicates.fst` lines 54-57
-   (identity_valid)
+**The key insight**: every rule now has a content containment
+property. No rule allows the introduction of information
+not present in the premises.
 
-3. `specs/content/PraxisPredicates.fst` lines 79-85
-   (rule_obligation_met)
+**The canonical example:**
 
-4. `specs/content/PraxisPredicates.fst` lines 89-98
-   (chain_well_formed_aux)
+Observation: "The sky is blue"
+Agent claims: Identity rule, conclusion "The economy will crash"
 
-5. `specs/content/PraxisPredicates.fst` lines 100-109
-   (chain_well_formed)
+- `known = {"The sky is blue"}`
+- Premise "The sky is blue" is in known — grounding passes
+- `identity_valid`: "The economy will crash" = "The sky is blue"?
+  No. → false
+- `chain_well_formed` returns false. Memory unchanged.
 
-6. `specs/content/AgentReasoning.fst` lines 9-22
-   (inference_sound — the ensures clause)
+**But what if the agent claims Derivation instead?**
 
-### F* Syntax You Need to Know (just these)
+Before our strengthening: Derivation only checked that
+`rule_id` was non-empty and confidence was in [0,100].
+"The economy will crash" with `rule_id="reasoning"` would
+have PASSED. The hallucination persists.
 
-- `let f (x: t) : r = body` → function definition
-- `let rec f ... (decreases x)` → recursive, F* checks
-  termination using x getting smaller
-- `match x with | pattern -> result` → pattern matching
-- `fun x -> body` → anonymous function (lambda)
-- `List.Tot.for_all f lst` → true if f is true for every
-  element (like Python's `all(f(x) for x in lst)`)
-- `List.Tot.existsb f lst` → true if f is true for any
-  element (like Python's `any(f(x) for x in lst)`)
-- `s :: rest` → list destructuring (head :: tail)
-- `Pure bool (requires P) (ensures fun b -> Q)` →
-  function returning bool, precondition P, postcondition Q
-- `b ==> Q` → logical implication: if b is true, Q holds
-- `/\` → logical AND
-- `Tot` → total function (always terminates, no side effects)
+After: Derivation checks token containment — every word in
+the conclusion must appear in at least one premise.
+"economy" and "crash" are NOT in "The sky is blue".
+Rejected. The hallucination cannot persist through ANY rule.
 
-That's it. You don't need to know Pulse, effects, or monads
-for this layer.
+**Code**:
 
-### Practice Questions
-
-1. "What does 'grounded in observations' mean precisely?"
-
-   The `known` list starts with the observation contents.
-   step_premises_valid checks that every premise in a step
-   is in `known`. So every chain of reasoning traces back
-   to something the agent actually observed.
-
-2. "Walk me through the canonical example."
-
-   Observation: "The sky is blue"
-   Agent claims: Identity rule, conclusion "The economy will crash"
-
-   - known = ["The sky is blue"]
-   - step.premises = ["The sky is blue"] — grounding passes
-     (the premise IS in known)
-   - identity_valid: premises = ["The sky is blue"],
-     conclusion = "The economy will crash"
-     → "The sky is blue" = "The economy will crash"? No. → false
-   - rule_obligation_met dispatches to identity_valid → false
-   - chain_well_formed_aux stops. Chain is not well-formed.
-
-3. "Why is string equality the right notion here, not semantic
-   similarity?"
-
-   This is a question Coblenz WILL ask. Your answer:
-   String equality is decidable, total, and verifiable by Z3.
-   Semantic similarity requires an embedding model, is
-   approximate, and its correctness is not provable. The
-   tradeoff: we lose expressiveness (can't verify "roughly
-   the same meaning") but gain a machine-checked guarantee.
-   An agent that needs to transform content must use
-   Extraction (substring) or Aggregation (bounded recombination)
-   rules, which have their own verifiable obligations.
-
-4. "What does the ensures clause on inference_sound actually
-   guarantee?"
-
-   ```fstar
-   ensures fun b -> b ==>
-     chain_well_formed obs_contents chain /\
-     chain.final_conclusion = conclusion.me_content
-   ```
-
-   "If the function returns true, then (1) the chain is
-   well-formed with respect to the observations, AND (2) the
-   chain's declared conclusion matches what the agent wants
-   to store. The ==> is an implication — when b is false,
-   no claim is made. Z3 verified this holds for ALL possible
-   inputs at F* compile time."
-
-5. "Could the function just always return false and trivially
-   satisfy the ensures clause?"
-
-   YES — the implication would be vacuously true. This is
-   where the incorrectness lemmas come in (Day 3).
+- F*: `specs/content/PraxisPredicates.fst` lines 75-93
+  (split_words, token_subset, derivation_valid)
+- Python: `tests/praxis/gateway_client.py` lines 418-427
+  (_token_subset, _derivation_valid)
 
 ---
 
-## Day 3: The Proofs — Soundness and Incorrectness
+## Part 4: The F* Guarantee (2 minutes)
 
-**Goal**: Explain the two-sided proof argument and what Z3
-actually does. Be able to answer "is the spec vacuous?"
+The Python and F\* implementations are structural mirrors.
+Same types, same logic, same case analysis. The difference:
+F* has ensures clauses verified by Z3 for ALL possible
+inputs.
 
-### Study — Proofs
+**The ensures clause on inference_sound:**
 
-1. `specs/content/PraxisLemmas.fst` — all of it (174 lines)
+```fstar
+ensures fun b -> b ==>
+  chain_well_formed obs_contents chain /\
+  chain.final_conclusion = conclusion.me_content
+```
 
-   Focus on:
-   - L1 (identity_fabrication_rejected) — lines 45-53
-   - L7 (contradiction_rejected) — lines 149-173
+Read as: "If this function returns true, then the chain
+is well-formed AND the conclusion matches." The `==>` is
+implication — when `b` is false, no claim is made. Z3
+verified this holds for ALL possible inputs at F* compile
+time.
 
-2. `specs/content/PraxisNormTests.fst` — all of it (217 lines)
+**"Could the function just return false and trivially
+satisfy the ensures clause?"**
 
-   Focus on:
-   - Lines 209-216 (the canonical hallucination test)
-   - The comment at lines 187-207 (explains the bridge
-     between universal and existential)
+Yes — the implication would be vacuously true. That's
+where the incorrectness lemmas come in.
 
-### Concepts You Need
+**Incorrectness lemmas (Gardner, OPLSS 2026):**
 
-**Soundness (ensures clauses)**:
-"If verification succeeds, properties hold."
-∀ inputs. verified(inputs) ⟹ properties(inputs)
+Soundness: verified(inputs) ⟹ properties(inputs)
+Incorrectness: fabricated(inputs) ⟹ rejected(inputs)
 
-**Incorrectness (lemmas)**:
-"If the input is fabricated, rejection is guaranteed."
-∀ inputs. fabricated(inputs) ⟹ rejected(inputs)
+Together: the gate is tight. Not vacuously accepting
+everything, not rejecting everything.
 
-**Together**: The gate is tight. It doesn't accept everything
-(would be vacuously sound) and doesn't reject everything
-(would be useless).
+Key lemmas:
 
-**assert_norm**: F* evaluates the expression at type-check
-time using its normalizer (no Z3 involved). It's a
-compile-time unit test. If the expression doesn't reduce
-to the expected value, typechecking fails.
+- **L1** (identity_fabrication_rejected): If Identity is
+  claimed with conclusion ≠ premise, rejection guaranteed.
+  Body is `()` — Z3 found the proof automatically.
+- **L5** (ruleless_derivation_rejected): Even Derivation
+  rejects empty rule IDs.
+- **L6** (novel_token_derivation_rejected): If Derivation
+  conclusion contains tokens not in premises, rejection
+  guaranteed. Adopts LBAC information flow principle.
+- **L7** (novel_token_aggregation_rejected): Same LBAC
+  principle applied uniformly — Aggregation with novel
+  tokens is also rejected. Closes the gap where
+  `classify_rule` would route short fabrications to
+  Aggregation, bypassing Derivation's token check.
+- **L8** (contradiction_rejected): If new fact contradicts
+  existing memory, P2 rejects. Only lemma with non-trivial
+  proof body (recursive witness search through list).
 
-**Lemma in F***: A function whose return type is `Lemma`
-with requires/ensures. The body must provide evidence that
-the ensures holds given the requires. When the body is `()`,
-Z3 found the proof automatically. When it's longer (like L7),
-F* is guiding Z3 through an inductive argument.
+**assert_norm tests**: F* evaluates the same concrete inputs
+as the Python test suite at type-check time. Bridges
+universal proofs (Z3, all inputs) and existential tests
+(pytest, specific inputs).
 
-### Practice Questions — Proofs
+**Code**:
 
-1. "How do you know the spec isn't vacuously accepting
-   everything?"
-
-   The incorrectness lemma identity_fabrication_rejected
-   (PraxisLemmas.fst:45-53) proves: for ALL steps claiming
-   Identity where conclusion ≠ premise, rule_obligation_met
-   returns false. Z3 verified this. The gate provably rejects
-   fabricated inputs.
-
-2. "Why does L7 (contradiction_rejected) need a recursive
-   proof body when L1 doesn't?"
-
-   L1 is about a single step — Z3 just unfolds identity_valid
-   and sees that `p <> conclusion` makes `p = conclusion`
-   false. Propositional reasoning.
-
-   L7 involves List.Tot.for_all over a list with a witness
-   somewhere inside it. Z3 can't automatically do induction
-   over lists — it needs F\* to walk the list recursively
-   until the contradicting entry is found, at which point
-   the proof is trivial. This is a standard technique:
-   F* provides the inductive structure, Z3 closes each case.
-
-3. "What's the relationship between assert_norm and the
-   ensures clauses?"
-
-   ensures clauses are UNIVERSAL — they hold for all inputs.
-   assert_norm tests are EXISTENTIAL — they confirm a specific
-   input evaluates correctly. Together: the ensures clause
-   says the property holds everywhere, and assert_norm confirms
-   the function actually computes the right answer on concrete
-   inputs matching the test suite. It bridges the universal
-   proof and the runtime tests.
-
-4. "What does Z3 actually do here?"
-
-   Z3 is an SMT (Satisfiability Modulo Theories) solver.
-   F\* translates the ensures clause into a logical formula
-   and asks Z3: "Is there any input that makes this false?"
-   If Z3 says "unsatisfiable" (no counterexample exists),
-   the property is proved. For the incorrectness lemmas,
-   F* asks: "Is there any fabricated input where the function
-   returns true?" Z3 says no.
+- `specs/content/AgentReasoning.fst` (ensures clauses)
+- `specs/content/PraxisLemmas.fst` (incorrectness lemmas)
+- `specs/content/PraxisNormTests.fst` (compile-time eval)
 
 ---
 
-## Day 4: The Full Picture — What You Prove, What You Don't
+## Part 5: What We Prove, What We Don't (1 minute)
 
-**Goal**: Be able to give a 10-minute presentation and handle
-Q&A. Know the honest gaps.
+**VerifiedWrite.fst** ties it all together with Pulse
+separation logic:
 
-### Study — Full Picture
+```fstar
+fn verified_write (...)
+  requires region |-> v
+  returns r: write_result
+  ensures (match r with
+    | WriteOk -> region |-> conclusion.me_content **
+                 pure (chain_well_formed ... /\
+                       no_contradiction ... /\
+                       content_safe ... /\
+                       memory_is_complete ...)
+    | _ -> region |-> v)
+```
 
-1. `specs/VerifiedWrite.fst` — all 82 lines
-   Focus on the ensures clause (lines 32-44)
+On success: region holds new content AND all properties hold.
+On failure: region holds old value. Separation logic (`**`)
+guarantees no partial writes, no aliasing.
 
-2. `specs/substrate/AgentState.fst` — 30 lines
-   Focus on persist_bounded and the separation logic
+### Honest Gaps
 
-3. Skim `src/praxis/server.py` lines 297-337
-   (VerifyWrite gRPC handler — the production entry point)
+1. **Python is a manual mirror, not extracted from F*.**
+   KaRaMeL extraction would close this. The normalization
+   test bridge partially mitigates — same inputs evaluated
+   at F* compile time and at Python runtime.
 
-### Pulse/Separation Logic You Need
+2. **Token containment is syntactic, not semantic.**
+   "GPU" and "graphics processing unit" are different
+   tokens. An agent could rephrase observations using
+   synonyms and the token check wouldn't catch it. This
+   is a deliberate tradeoff: syntactic checks are decidable,
+   total, and Z3-verifiable. Semantic similarity is not.
 
-- `region |-> v` → "this memory region holds value v,
-  and I have exclusive ownership"
-- `**` → separating conjunction: two resources are
-  disjoint (no aliasing)
-- `pure (P)` → logical assertion P holds
-- `#v: erased string` → ghost variable, exists only in
-  the proof, erased at runtime
-- `requires R / ensures E` → same as Pure, but for
-  stateful (heap-manipulating) code
+3. **The spec prevents persistence of hallucinations, not
+   generation of them.** The LLM can still hallucinate —
+   it just can't store the hallucination in durable memory.
 
-### The 10-Minute Talk Structure
+4. **Observation trust boundary.** The proxy's
+   `extract_observations_from_messages` validates tool
+   message provenance via LBAC (Zhou et al.): only tool
+   messages matching a declared `tool_call` ID receive
+   `TOOL_OUTPUT` trust; unmatched messages get `UNVERIFIED`.
+   P3 then applies TACIT (Odersky et al.) trust derivation:
+   ALL observations must have trusted provenance. If someone
+   manually constructs a MemoryIntent with fabricated
+   observations, the TACIT check at P3 will reject them
+   unless every observation has trusted provenance.
 
-**Minute 1-2**: The problem.
-Hallucination persistence loops. Agent fabricates, stores,
-reads back, compounds. Show the 3-turn escalation.
+---
 
-**Minute 3-4**: The solution shape.
-Five-check pipeline. Each check is a function with a
-machine-checked ensures clause. On failure, memory unchanged.
+## Anticipated Questions
 
-**Minute 5-7**: The core mechanism.
-chain_well_formed. Walk the canonical example.
-identity_valid catches fabrication. Show the ensures clause.
-Show the incorrectness lemma proving rejection is guaranteed.
+**"String equality / token containment is too strict."**
+Yes — it means agents can't rephrase. That's intentional.
+Any transformation must go through a rule with its own
+verifiable obligation. The verification strength spectrum
+gives agents progressively more freedom (Identity → Extraction
+→ Aggregation → Derivation) while maintaining content
+containment at every level. An agent that needs to introduce
+genuinely novel terms must do so through a tool call — the
+tool's output re-enters the observation set via a trusted
+channel.
 
-**Minute 8-9**: The formal guarantee.
-VerifiedWrite.fst ensures clause. On WriteOk: region holds
-new content AND all five properties hold (separation logic
-ownership + pure logical properties). On failure: region
-unchanged. Pulse's separation logic prevents partial writes.
-
-**Minute 10**: Honest gaps and next steps.
-
-- Python runtime is a manual mirror, not extracted from F\*.
-  KaRaMeL extraction is the path to closing this.
-- Derivation rule is semantically weak — trusts the domain
-  rule catalog.
-- Poison detection is substring matching, not adversarially
-  robust NLP.
-- The spec prevents persistence of hallucinations, not
-  generation of them. The LLM can still hallucinate —
-  it just can't store the hallucination in durable memory.
-
-### Anticipated Hard Questions
-
-**"String equality is too strict / too weak."**
-Too strict: yes, it means the Identity rule only applies
-to verbatim pass-through. That's intentional — any
-transformation must use a different rule with its own
-verifiable obligation. Too weak: no, because Derivation
-(the escape hatch) still requires grounded premises and a
-named domain rule.
+**"Where does the token containment idea come from?"**
+LBAC/TypeGuard (Zhou et al., NeurIPS 2026). Their
+information flow control principle: untrusted data cannot
+flow to privileged operations without passing through a
+declassification boundary. Applied here: the agent's
+synthesis cannot introduce novel information without
+going through a trusted boundary (tool call or user input).
 
 **"The Python isn't verified."**
-Correct. The F\* proofs cover the specification. The Python
-is a manual mirror validated by shared test vectors
-(assert_norm in F* and pytest use identical inputs). The
-extraction path via KaRaMeL would eliminate this gap. Be
-upfront about this.
-
-**"What about multi-step chains where each step is a
-Derivation?"**
-Each step's premises must be in `known`. The first step's
-premises must be observations. So even a chain of derivations
-is rooted in real observations. What's NOT guaranteed is that
-the derivations are semantically correct — only that they
-have non-empty rule IDs and bounded confidence. This is a
-deliberate tradeoff: fully verifying semantic correctness
-of LLM reasoning is an open problem.
+Correct. The normalization test bridge (assert_norm in F*
+evaluates the same inputs as pytest) partially mitigates.
+KaRaMeL extraction is the path to eliminating this gap
+entirely.
 
 **"How is this different from just validating the output?"**
 Output validation is a single check at the end. Praxis
 verifies the REASONING CHAIN — every step from observation
-to conclusion. This is stronger because it prevents
+to conclusion. This is stronger because it catches
 fabrication at any point in the chain, not just the final
-output. It also produces a proof certificate that can be
-re-verified later (temporal validity) or by another agent
-(witness transport).
+output. It also produces a proof certificate for temporal
+re-verification and cross-agent transport.
+
+**"What about multi-step chains where every step is
+Derivation?"**
+Each step's premises must be in `known`. The first step's
+premises must be observations. So even a chain of derivations
+is rooted in real observations. AND: each derivation step's
+conclusion must use only tokens from its premises. Novel
+information cannot accumulate across steps.
 
 **"Could you use a dependent type system instead of
 refinement types?"**
-F*'s refinement types ARE dependent types — refinements
-are a form of dependent type where the type of the return
-value depends on the value of the input. The ensures clause
-`fun b -> b ==> P` is a dependent return type: the type of
-the return varies based on whether b is true or false.
+F*'s refinement types ARE dependent types. The ensures
+clause `fun b -> b ==> P` is a dependent return type:
+the type varies based on whether b is true or false.
+
+**"What did you change from the original design?"**
+Four things, all grounded in existing research:
+
+1. Strengthened Derivation — purged arbitrary confidence
+   score, replaced with LBAC token containment (Zhou et al.).
+2. Applied SAME LBAC principle to Aggregation — closed the
+   gap where `classify_rule` routes short fabrications to
+   Aggregation, bypassing Derivation's token check.
+3. Added LBAC provenance validation at extraction boundary —
+   tool messages without a matching `tool_call` ID receive
+   UNVERIFIED trust. Prevents injected tool responses.
+4. Added TACIT trust derivation at P3 (Odersky et al.) —
+   ALL observations must have trusted provenance (not just
+   the declared `source_trusted` channel flag). Defense in
+   depth: both channel trust AND derived provenance must hold.
+L6 and L7 prove novel tokens rejected. P1-P6 sequential.
+
+---
+
+## Research Directions for Coblenz's Group
+
+If he asks "where does this go next?":
+
+1. **Semantic containment** — move from syntactic token
+   subset to semantic containment. Open problem: how do
+   you define "semantic subset" in a way that's decidable
+   and formally verifiable? Possible approach: embedding
+   distance with a proved bound.
+
+2. **Domain rule catalogs** (Dafny-IL pattern) — the
+   `domain_rule_id` currently just needs to be non-empty.
+   A curated catalog with pre/postconditions per rule
+   would make Derivation stronger without losing generality.
+
+3. **Trust propagation through chains** (TACIT pattern) —
+   P3 now enforces observation-level TACIT trust derivation
+   (all observations must be provenance-trusted). The next
+   step: thread trust through inference STEPS. Identity
+   preserves observation trust. Derivation degrades to
+   AgentGenerated. Memory entries carry the effective trust
+   of the weakest rule in their chain.
+
+4. **KaRaMeL extraction** — compile F*/Pulse to C,
+   eliminating the Python mirror entirely.
+
+5. **Usable PL angle** — how do you make this verification
+   practical enough that agents naturally produce verifiable
+   chains without forcing unnatural workflows? The inference
+   proxy is one answer (framework-agnostic, no code changes).
+   What's the right developer experience?

@@ -124,22 +124,54 @@ let ruleless_derivation_rejected (step: inference_step)
 = ()
 
 
-(* L6: Over-confident derivation is always rejected.
+(* L6: Derivation with novel tokens is always rejected.
 
-   Confidence must be in [0, 100]. An agent cannot inflate
-   its confidence to mask uncertainty. *)
+   If a derivation conclusion contains a token that does not appear
+   in any premise, the rule obligation MUST fail. This closes the
+   Derivation gap: even the weakest inference rule now prevents
+   the introduction of information not present in the observations.
 
-let overconfident_derivation_rejected (step: inference_step)
+   Adopts the LBAC/TypeGuard (Zhou et al.) information flow
+   principle: untrusted synthesis cannot introduce novel content
+   without passing through a trusted boundary (tool call or
+   user confirmation). *)
+
+let novel_token_derivation_rejected (step: inference_step)
   : Lemma
     (requires
       (match step.rule with
-       | RuleDerivation ev -> ev.de_confidence > 100
+       | RuleDerivation ev ->
+         String.length ev.de_domain_rule_id > 0 /\
+         token_subset step.premises step.step_conclusion = false
        | _ -> False))
     (ensures rule_obligation_met step = false)
 = ()
 
 
-(* L7: Contradictions are always rejected.
+(* L7: Aggregation with novel tokens is always rejected.
+
+   Adopts the same LBAC/TypeGuard (Zhou et al.) information flow
+   principle applied to derivation: untrusted synthesis cannot
+   introduce tokens not present in any premise, even when the
+   conclusion is shorter than the combined premises (length bound
+   alone is insufficient — content containment is required).
+
+   classify_rule routes short conclusions to Aggregation rather
+   than Derivation. Without this check, short fabrications would
+   bypass Derivation's token containment. *)
+
+let novel_token_aggregation_rejected (step: inference_step)
+  : Lemma
+    (requires
+      (match step.rule with
+       | RuleAggregation ev ->
+         token_subset step.premises step.step_conclusion = false
+       | _ -> False))
+    (ensures rule_obligation_met step = false)
+= ()
+
+
+(* L8: Contradictions are always rejected.
 
    If a new fact shares a key with an existing fact but has
    different content, the consistency check MUST fail.

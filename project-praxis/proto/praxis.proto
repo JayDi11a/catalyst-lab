@@ -86,8 +86,6 @@ message ToolResultRule {
 
 message DerivationRule {
   string domain_rule_id = 1;
-  string rule_description = 2;
-  uint32 confidence = 3;  // 0-100
 }
 
 message InferenceStep {

@@ -60,6 +60,24 @@ let extraction_valid (step: inference_step) (ev: extraction_evidence) : bool =
   List.Tot.existsb (fun p -> p = ev.ext_source_premise) step.premises &&
   contains_substring ev.ext_source_premise step.step_conclusion
 
+let tool_result_valid (_step: inference_step) (ev: tool_evidence) : bool =
+  ev.te_tool_trusted
+
+let split_words (s: string) : list string =
+  List.Tot.filter (fun w -> String.length w > 0) (String.split [' '] s)
+
+let rec collect_words (strs: list string) : Tot (list string) (decreases strs) =
+  match strs with
+  | [] -> []
+  | s :: rest -> split_words s @ collect_words rest
+
+let token_subset (premises: list string) (conclusion: string) : bool =
+  let premise_words = collect_words premises in
+  let conclusion_words = split_words conclusion in
+  List.Tot.for_all
+    (fun w -> List.Tot.existsb (fun pw -> pw = w) premise_words)
+    conclusion_words
+
 let aggregation_valid (step: inference_step) (ev: aggregation_evidence) : bool =
   List.Tot.for_all
     (fun p -> List.Tot.existsb (fun sp -> sp = p) step.premises)
@@ -67,14 +85,12 @@ let aggregation_valid (step: inference_step) (ev: aggregation_evidence) : bool =
   List.Tot.for_all
     (fun sp -> List.Tot.existsb (fun p -> p = sp) ev.agg_source_premises)
     step.premises &&
-  String.length step.step_conclusion <= total_string_length ev.agg_source_premises
+  String.length step.step_conclusion <= total_string_length ev.agg_source_premises &&
+  token_subset step.premises step.step_conclusion
 
-let tool_result_valid (_step: inference_step) (ev: tool_evidence) : bool =
-  ev.te_tool_trusted
-
-let derivation_valid (_step: inference_step) (ev: derivation_evidence) : bool =
+let derivation_valid (step: inference_step) (ev: derivation_evidence) : bool =
   String.length ev.de_domain_rule_id > 0 &&
-  ev.de_confidence <= 100
+  token_subset step.premises step.step_conclusion
 
 let rule_obligation_met (step: inference_step) : bool =
   match step.rule with

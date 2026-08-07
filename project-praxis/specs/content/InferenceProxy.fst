@@ -67,7 +67,7 @@ let extract_observations (messages: list chat_message) : list observation =
    3. Aggregation: conclusion length <= total observation length
                    (synthesis from multiple observations)
    4. Derivation:  fallback — novel content exceeding the available
-                   evidence, classified with confidence 50
+                   evidence
 
    The classification is conservative: it assigns the STRONGEST
    rule whose structural precondition is met. Identity is strongest
@@ -84,6 +84,4 @@ let classify_rule (obs_contents: list string) (conclusion: string) : inference_r
       if String.length conclusion <= total_string_length obs_contents then
         RuleAggregation ({ agg_source_premises = obs_contents })
       else
-        RuleDerivation ({ de_domain_rule_id = "llm-inference";
-                          de_rule_desc = "proxy-classified";
-                          de_confidence = 50 })
+        RuleDerivation ({ de_domain_rule_id = "llm-inference" })

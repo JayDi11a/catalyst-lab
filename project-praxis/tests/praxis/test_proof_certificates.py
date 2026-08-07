@@ -72,8 +72,8 @@ class TestCertificateGeneration:
             "P2:consistent",
             "P3:not_poisoned",
             "P4:complete",
-            "P7:bounds_ok",
-            "P5:ownership",
+            "P5:bounds_ok",
+            "P6:ownership",
         ]
         assert resp.certificate.properties_satisfied == expected
 

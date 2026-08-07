@@ -74,8 +74,11 @@ and memory substrate safety. A key architectural contribution is the
 observations and conclusions at the model serving boundary, enabling
 automatic inference rule classification without framework modification. We
 deploy Praxis as a verification sidecar alongside the Hermes agentic
-framework on Red Hat OpenShift AI with vLLM/KServe model serving and NVIDIA
-OpenShell sandbox enforcement. Our evaluation shows 24 verified \fstar{}
+framework on Red Hat OpenShift AI with vLLM/KServe model serving, inside a
+three-layer sandboxing architecture: OpenShift Sandboxed Containers (Kata)
+for kernel isolation, NVIDIA OpenShell for application-layer enforcement,
+and Praxis for content verification---empirically validated as
+complementary~\cite{osc2026layered}. Our evaluation shows 24 verified \fstar{}
 specifications, 177 Python runtime tests, 10 incorrectness lemmas, and
 zero-admit formal proofs covering OWASP ASI06 memory poisoning vectors. To
 our knowledge, Praxis is the first system to apply separation logic to AI
@@ -180,10 +183,13 @@ and requires no code changes.
     acceptance) but that fabricated inputs are necessarily rejected
     (soundness of rejection).
 
-  \item \textbf{Deployable architecture.} Praxis deploys as a verification
-    sidecar on Red Hat OpenShift AI alongside Hermes with vLLM/KServe model
-    serving and NVIDIA OpenShell~\cite{nvidia2026openshell} runtime sandbox.
-    KaRaMeL extraction~\cite{protzenko2017verified} compiles verified
+  \item \textbf{Deployable three-layer architecture.} Praxis deploys as a
+    verification sidecar on Red Hat OpenShift AI alongside Hermes with
+    vLLM/KServe model serving, inside a three-layer sandboxing
+    architecture~\cite{osc2026layered}: Kata kernel isolation (Layer~1),
+    NVIDIA OpenShell~\cite{nvidia2026openshell} application sandbox
+    (Layer~2), and Praxis content verification (Layer~3). KaRaMeL
+    extraction~\cite{protzenko2017verified} compiles verified
     \fstar{}/Pulse to native C for production latency targets.
 \end{enumerate}
 
@@ -248,13 +254,14 @@ agent verification system addresses.
 \midrule
 Code verification        & \checkmark & ---        & ---        & \checkmark \\
 Inference soundness      & ---        & \checkmark & ---        & \checkmark \\
-Tool trust               & ---        & \checkmark & \checkmark & \checkmark \\
+Tool trust / IFC         & ---        & \checkmark & \checkmark & \checkmark \\
 Capability tracking      & ---        & ---        & \checkmark & \checkmark \\
 Multi-agent safety       & ---        & ---        & \checkmark & \checkmark \\
 \textbf{Persistent memory}       & ---        & ---        & ---        & \textbf{\checkmark} \\
 \textbf{Separation logic}        & ---        & ---        & ---        & \textbf{\checkmark} \\
+\textbf{Incorrectness lemmas}    & ---        & ---        & ---        & \textbf{\checkmark} \\
 \textbf{Memory poisoning (ASI06)} & ---       & ---        & ---        & \textbf{\checkmark} \\
-\textbf{Red Hat stack}            & ---        & ---        & ---        & \textbf{\checkmark} \\
+\textbf{Three-layer sandbox}     & ---        & ---        & ---        & \textbf{\checkmark} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -547,36 +554,52 @@ endpoint. No framework modification is required. The proxy deploys as a
 sidecar container alongside the agent pod, using the same image as the
 verification gateway with \texttt{PRAXIS\_MODE=inference-proxy}.
 
-\subsection{Deployment on Red Hat OpenShift AI}
+\subsection{Three-Layer Sandboxing on Red Hat OpenShift AI}
+\label{sec:threelayer}
 
-\begin{lstlisting}[language={},caption={Deployment architecture on OpenShift AI.},label={lst:arch}]
-+- OpenShift AI ----------------------------+
-|                                            |
-| vLLM/KServe InferenceService (GPU)        |
-|       ^                                    |
-|       | HTTPS (OSSM mTLS, ODH CA)          |
-| +-----+----------------------------------+|
-| | Inference Proxy (:8082)                 ||
-| | classify_rule -> Id/Ext/Agg/Deriv       ||
-| | X-Praxis-Rule / X-Praxis-Status         ||
-| +-----+----------------------------------+|
-|       ^ OpenAI-compatible API              |
-| +- OpenShell Sandbox -------------------+ |
-| |                                       | |
-| | +- Hermes Agent (UBI 9) -----------+  | |
-| | | MEMORY.md, USER.md, SQLite       |  | |
-| | +-------------+--------------------+  | |
-| |               | gRPC MemoryIntent     | |
-| | +-------------v--------------------+  | |
-| | | Praxis Sidecar (:50052)          |  | |
-| | | F*/Z3 -> cert or rejection       |  | |
-| | | OTel span -> MLflow audit        |  | |
-| | +----------------------------------+  | |
-| | Policy Engine (seccomp, eBPF)         | |
-| +---------------------------------------+ |
-|                                            |
-| PostgreSQL (CNPG) | OTel | MLflow | Tempo |
-+--------------------------------------------+
+Recent empirical work~\cite{osc2026layered} validates that dual protection
+is necessary for agent workloads: OpenShift Sandboxed Containers (Kata)
+stops kernel-level exploits (CVE-2026-31431), while OpenShell stops
+application-layer data exfiltration---neither alone is sufficient. Praxis
+adds a third layer that neither addresses: \emph{content verification} of
+what the agent persists.
+
+\begin{lstlisting}[language={},caption={Three-layer sandboxing architecture on OpenShift AI.},label={lst:arch}]
++- OpenShift AI Cluster ----------------------------+
+|                                                    |
+| vLLM/KServe InferenceService (GPU, TrustyAI)     |
+|       ^                                            |
+|       | HTTPS (OSSM mTLS, ODH CA chain)            |
+|                                                    |
+| +- Layer 1: Kata (kernel isolation) ------------+ |
+| | runtimeClassName: kata                         | |
+| | Prevents: container escapes, page cache attacks| |
+| |                                                | |
+| | +- Layer 2: OpenShell (application sandbox) -+ | |
+| | | Policy Engine: seccomp + Landlock + cgroups | | |
+| | | Privacy Router: local-only inference       | | |
+| | | Prevents: exfiltration, unauthorized I/O   | | |
+| | |                                            | | |
+| | | +- Inference Proxy (:8082) -------------+ | | |
+| | | | classify_rule -> Id/Ext/Agg/Deriv      | | | |
+| | | | X-Praxis-Rule / X-Praxis-Status        | | | |
+| | | +-----+---------------------------------+ | | |
+| | |       ^ OpenAI-compatible API             | | |
+| | | +- Hermes Agent (UBI 9) ---------------+ | | |
+| | | | MEMORY.md, USER.md, SQLite, skills   | | | |
+| | | +-------------+-----------------------+ | | |
+| | |               | gRPC MemoryIntent        | | |
+| | | +- Layer 3: Praxis (content verif.) ---+ | | |
+| | | | Praxis Sidecar (:50052)              | | | |
+| | | | F*/Z3 -> proof cert or rejection     | | | |
+| | | | OTel span -> MLflow audit trail      | | | |
+| | | | Prevents: hallucination persistence  | | | |
+| | | +--------------------------------------+ | | |
+| | +------------------------------------------+ | |
+| +----------------------------------------------+ |
+|                                                    |
+| PostgreSQL (CNPG) | OTel Collector | MLflow | Tempo|
++----------------------------------------------------+
 \end{lstlisting}
 
 \paragraph{Extending Red Hat OpenShift AI TrustyAI.}
@@ -593,19 +616,23 @@ agent trust (Praxis).
 \subsection{Complementary Enforcement}
 
 \begin{table}[t]
-\caption{Division of enforcement between OpenShell (runtime sandbox) and Praxis (content verification).}
+\caption{Three-layer enforcement: each layer addresses threats the others cannot.}
 \label{tab:enforcement}
-\begin{tabular}{@{}lcc@{}}
+\small
+\begin{tabular}{@{}lccc@{}}
 \toprule
-\textbf{Concern} & \textbf{OpenShell} & \textbf{Praxis} \\
+\textbf{Threat} & \textbf{Kata (L1)} & \textbf{OpenShell (L2)} & \textbf{Praxis (L3)} \\
 \midrule
-Agent can't read another's files & Policy Engine & P5 ownership \\
-Memory write within bounds       & Policy Engine & P7 bounds \\
-Agent can't exfiltrate           & Policy Engine & --- \\
-Stored reasoning is sound        & ---           & P1 soundness \\
-Memory not poisoned              & ---           & P3 (ASI06) \\
-Sensitive context stays local    & Privacy Router & --- \\
-Concurrent memory access         & ---           & P8 concurrency \\
+Container escape               & \checkmark & ---           & --- \\
+Kernel exploit (CVE-2026-31431) & \checkmark & ---          & --- \\
+Agent reads another's files    & ---        & Policy Engine & P5 ownership \\
+Memory write within bounds     & ---        & Policy Engine & P7 bounds \\
+Data exfiltration              & ---        & Policy Engine & --- \\
+Stored reasoning unsound       & ---        & ---           & P1 soundness \\
+Memory poisoning (ASI06)       & ---        & ---           & P3 detection \\
+Sensitive context leak         & ---        & Privacy Router & --- \\
+Concurrent memory race         & ---        & ---           & P8 concurrency \\
+Hallucination persistence loop & ---        & ---           & P1 + L\textsubscript{P2} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -809,15 +836,21 @@ than binary privileged/quarantined separation. Third, incorrectness lemmas
 conditions. Fourth, the inference proxy provides framework-agnostic
 observation capture at the model serving boundary, solving the observation
 loss problem that renders memory-hook-based verification vacuous. Fifth, the
-architecture is deployable today on Red Hat OpenShift AI with Hermes,
-vLLM/KServe, and OpenShell, extending RHOAI TrustyAI from model-level trust
-to agent-level memory groundedness.
+architecture is deployed on Red Hat OpenShift AI inside a three-layer
+sandboxing model---Kata kernel isolation, OpenShell application sandbox,
+and Praxis content verification---empirically validated as
+complementary~\cite{osc2026layered}, extending RHOAI TrustyAI from
+model-level trust to agent-level memory groundedness.
 
 Praxis complements rather than competes with the three concurrent
 verification approaches. Dafny-as-IL~\cite{li2025dafny} verifies generated
-code. LBAC/TypeGuard~\cite{zhou2026lbac} encodes agent policies as types.
-TACIT~\cite{odersky2026tacit} tracks capabilities. Praxis adds persistent
-memory verification---the dimension that none of the three address.
+code (compile-time). LBAC/TypeGuard~\cite{zhou2026lbac} encodes agent
+policies as Haskell types (compile-time). TACIT~\cite{odersky2026tacit}
+tracks capabilities via Scala~3 capture checking (compile-time). These
+three operate at the \emph{code layer}; Praxis adds the \emph{content
+layer}---runtime verification of what the agent persists, the dimension
+that none of the three address. In the four-layer security model (kernel,
+application, code, content), Praxis closes the bottom layer.
 
 Future work proceeds along four axes. First, KaRaMeL
 extraction~\cite{protzenko2017verified} will compile the \fstar{}/Pulse

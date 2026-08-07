@@ -14,6 +14,7 @@ from .gateway_client import (
     Observation,
     PoisonPatterns,
     PraxisGatewayClient,
+    TrustLevel,
     WriteResult,
     identity_rule,
 )
@@ -177,6 +178,103 @@ class TestUntrustedSource:
         )
         resp = gateway.verify_write(intent)
         assert resp.result == WriteResult.POISON_DETECTED
+
+
+class TestTACITProvenanceTrust:
+    """TACIT (Odersky et al.): trust derived from observation provenance.
+
+    Even when source_trusted=True (channel trust), if any observation
+    has untrusted provenance (AGENT_GENERATED or UNVERIFIED), P3 rejects.
+    Defense in depth: both declared AND derived trust must hold.
+    """
+
+    @pytest.mark.p3
+    def test_agent_generated_observation_rejected(self, gateway: PraxisGatewayClient):
+        content = "Normal safe content"
+        obs = Observation(source="agent", content=content, trust=TrustLevel.AGENT_GENERATED)
+        step = InferenceStep(premises=[content], rule=identity_rule(), conclusion=content)
+        chain = InferenceChain(steps=[step], final_conclusion=content)
+        entry = MemoryEntry(key="observation_summary", content=content, source_trusted=True)
+        intent = MemoryIntent(
+            agent_id="test-agent",
+            observations=[obs],
+            chain=chain,
+            conclusion=entry,
+            existing=MemoryState(),
+            bound=2200,
+            poison_patterns=PoisonPatterns(),
+            domain_spec=DomainSpec(required_keys=["observation_summary"]),
+        )
+        resp = gateway.verify_write(intent)
+        assert resp.result == WriteResult.POISON_DETECTED
+
+    @pytest.mark.p3
+    def test_unverified_observation_rejected(self, gateway: PraxisGatewayClient):
+        content = "Normal safe content"
+        obs = Observation(source="tool:unknown", content=content, trust=TrustLevel.UNVERIFIED)
+        step = InferenceStep(premises=[content], rule=identity_rule(), conclusion=content)
+        chain = InferenceChain(steps=[step], final_conclusion=content)
+        entry = MemoryEntry(key="observation_summary", content=content, source_trusted=True)
+        intent = MemoryIntent(
+            agent_id="test-agent",
+            observations=[obs],
+            chain=chain,
+            conclusion=entry,
+            existing=MemoryState(),
+            bound=2200,
+            poison_patterns=PoisonPatterns(),
+            domain_spec=DomainSpec(required_keys=["observation_summary"]),
+        )
+        resp = gateway.verify_write(intent)
+        assert resp.result == WriteResult.POISON_DETECTED
+
+    @pytest.mark.p3
+    def test_mixed_trust_one_bad_rejected(self, gateway: PraxisGatewayClient):
+        """One trusted + one untrusted observation → rejected."""
+        content = "Normal safe content"
+        obs_good = Observation(source="tool:c1", content=content, trust=TrustLevel.TOOL_OUTPUT)
+        obs_bad = Observation(
+            source="agent", content="extra info", trust=TrustLevel.AGENT_GENERATED
+        )
+        step = InferenceStep(premises=[content], rule=identity_rule(), conclusion=content)
+        chain = InferenceChain(steps=[step], final_conclusion=content)
+        entry = MemoryEntry(key="observation_summary", content=content, source_trusted=True)
+        intent = MemoryIntent(
+            agent_id="test-agent",
+            observations=[obs_good, obs_bad],
+            chain=chain,
+            conclusion=entry,
+            existing=MemoryState(),
+            bound=2200,
+            poison_patterns=PoisonPatterns(),
+            domain_spec=DomainSpec(required_keys=["observation_summary"]),
+        )
+        resp = gateway.verify_write(intent)
+        assert resp.result == WriteResult.POISON_DETECTED
+
+    @pytest.mark.p3
+    def test_all_trusted_observations_accepted(self, gateway: PraxisGatewayClient):
+        """All observations have trusted provenance → P3 passes."""
+        content = "Normal safe content"
+        obs = [
+            Observation(source="user", content=content, trust=TrustLevel.EXTERNAL_INPUT),
+            Observation(source="tool:c1", content=content, trust=TrustLevel.TOOL_OUTPUT),
+        ]
+        step = InferenceStep(premises=[content], rule=identity_rule(), conclusion=content)
+        chain = InferenceChain(steps=[step], final_conclusion=content)
+        entry = MemoryEntry(key="observation_summary", content=content, source_trusted=True)
+        intent = MemoryIntent(
+            agent_id="test-agent",
+            observations=obs,
+            chain=chain,
+            conclusion=entry,
+            existing=MemoryState(),
+            bound=2200,
+            poison_patterns=PoisonPatterns(),
+            domain_spec=DomainSpec(required_keys=["observation_summary"]),
+        )
+        resp = gateway.verify_write(intent)
+        assert resp.result == WriteResult.WRITE_OK
 
 
 class TestEmptyPatterns:

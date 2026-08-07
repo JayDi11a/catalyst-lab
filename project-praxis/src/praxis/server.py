@@ -123,8 +123,6 @@ def _proto_to_rule(rule_proto) -> InferenceRule:
             kind=RuleKind.DERIVATION,
             evidence=DerivationEvidence(
                 domain_rule_id=ev.domain_rule_id,
-                rule_desc=ev.rule_description,
-                confidence=ev.confidence,
             ),
         )
     # Unset oneof — treat as identity (defensive)
@@ -260,8 +258,6 @@ def _rule_to_proto(rule: InferenceRule):
         proto.derivation.CopyFrom(
             praxis_pb2.DerivationRule(
                 domain_rule_id=rule.evidence.domain_rule_id,
-                rule_description=rule.evidence.rule_desc,
-                confidence=rule.evidence.confidence,
             )
         )
     return proto

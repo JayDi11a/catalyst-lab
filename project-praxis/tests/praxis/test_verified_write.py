@@ -1,6 +1,6 @@
 """Integration tests for the composed VerifiedWrite pipeline.
 
-Exercises the full P1+P2+P3+P4+P5+P7 pipeline through the mock
+Exercises the full P1+P2+P3+P4+P5+P6 pipeline through the mock
 gateway client, verifying that properties compose correctly and
 that the pipeline rejects at each stage in the correct order.
 """
@@ -62,8 +62,8 @@ class TestHappyPath:
         assert "P2:consistent" in resp.properties_satisfied
         assert "P3:not_poisoned" in resp.properties_satisfied
         assert "P4:complete" in resp.properties_satisfied
-        assert "P5:ownership" in resp.properties_satisfied
-        assert "P7:bounds_ok" in resp.properties_satisfied
+        assert "P5:bounds_ok" in resp.properties_satisfied
+        assert "P6:ownership" in resp.properties_satisfied
 
     @pytest.mark.integration
     def test_trace_id_propagated(self, gateway: PraxisGatewayClient):
@@ -178,7 +178,7 @@ class TestP4Rejection:
         assert "P4:complete" not in resp.properties_satisfied
 
 
-class TestP7Rejection:
+class TestP5Rejection:
     @pytest.mark.integration
     def test_exceeds_bound(self, gateway: PraxisGatewayClient):
         long_content = "x" * 2201
