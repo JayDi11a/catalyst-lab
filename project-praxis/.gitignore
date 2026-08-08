@@ -23,5 +23,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Journal
+journal/
+
 # OS
 .DS_Store

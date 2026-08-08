@@ -558,6 +558,20 @@ class PraxisGatewayClient:
     """Mock client mirroring the Praxis gRPC gateway verification pipeline.
 
     Pipeline: P1 → P2 → P3 → P4 → P5 → P6
+    F* contract: specs/VerifiedWrite.fst (Pulse separation logic)
+
+    P1  inference_sound     Chain well-formed + rule obligations met
+    P2  consistent          No contradiction with existing memory
+    P3  not_poisoned        Content safe (OWASP ASI06) + channel trust
+                            + TACIT observation provenance trust
+    P4  complete            Critical observations covered, required keys present
+    P5  bounds_ok           Content within size bound
+    P6  ownership           Write executes, certificate issued
+
+    Observation trust is established upstream by extract_observations_from_messages
+    via LBAC provenance validation (Zhou et al.): tool messages must match a
+    declared tool_call in an assistant message to receive TOOL_OUTPUT trust.
+    Unmatched tool messages receive UNVERIFIED trust, which TACIT at P3 rejects.
     """
 
     def __init__(self, endpoint: str = "localhost:50051"):

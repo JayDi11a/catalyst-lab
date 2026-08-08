@@ -78,8 +78,8 @@ framework on Red Hat OpenShift AI with vLLM/KServe model serving, inside a
 three-layer sandboxing architecture: OpenShift Sandboxed Containers (Kata)
 for kernel isolation, NVIDIA OpenShell for application-layer enforcement,
 and Praxis for content verification---empirically validated as
-complementary~\cite{osc2026layered}. Our evaluation shows 24 verified \fstar{}
-specifications, 177 Python runtime tests, 10 incorrectness lemmas, and
+complementary~\cite{osc2026layered}. Our evaluation shows 17 verified \fstar{}
+specifications, 174 Python runtime tests, 14 incorrectness lemmas, and
 zero-admit formal proofs covering OWASP ASI06 memory poisoning vectors. To
 our knowledge, Praxis is the first system to apply separation logic to AI
 agent persistent memory.
@@ -304,9 +304,9 @@ type trust_level =
 \midrule
 Identity    & conclusion = single premise   & Full     & Observation relay only \\
 Extraction  & conclusion $\subseteq$ source & Strong   & Substring extraction \\
-Aggregation & $|$conclusion$|$ $\leq$ $\Sigma|$premises$|$ & Moderate & Multi-source synthesis \\
+Aggregation & $|$concl.$|$ $\leq$ $\Sigma|$premises$|$ + token $\subseteq$ & Moderate & Multi-source synthesis \\
 ToolResult  & tool is trusted               & Delegated & Full tool output \\
-Derivation  & rule\_id non-empty, conf $\in$ [0,100] & Weakest & Domain reasoning \\
+Derivation  & rule\_id non-empty + token $\subseteq$ & Weakest & Domain reasoning \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -322,7 +322,11 @@ Derivation  & rule\_id non-empty, conf $\in$ [0,100] & Weakest & Domain reasonin
   \item[P3 Poisoning Resistance] (\texttt{PoisonDetection}):
     Case-insensitive pattern matching against OWASP
     ASI06~\cite{owasp2026asi06} vectors---instruction overrides, role
-    escalations, exfiltration markers.
+    escalations, exfiltration markers. Declared channel trust
+    (\texttt{source\_trusted}) AND TACIT~\cite{odersky2026tacit}
+    observation provenance trust---all observations must have trusted
+    provenance (LBAC~\cite{zhou2026lbac} validates tool message
+    \texttt{tool\_call\_id} against declared \texttt{tool\_calls}).
   \item[P4 Completeness] (\texttt{CompletenessCheck}): Domain-spec critical
     observations covered and required keys present.
 \end{description}
@@ -418,8 +422,9 @@ rejection is \emph{necessary} under attack conditions:
   \item L3: Untrusted tool output $\to$ always rejected
   \item L4: Empty inference chain $\to$ always rejected
   \item L5: Evidence-free derivation $\to$ always rejected
-  \item L6: Over-confident derivation $\to$ always rejected
-  \item L7: Contradiction with existing memory $\to$ always rejected
+  \item L6: Novel token derivation (LBAC IFC) $\to$ always rejected
+  \item L7: Novel token aggregation (LBAC IFC) $\to$ always rejected
+  \item L8: Contradiction with existing memory $\to$ always rejected
 \end{itemize}
 
 
@@ -443,17 +448,21 @@ let classify_rule (obs_contents: list string)
         then RuleAggregation
                ({ agg_source_premises = obs_contents })
         else RuleDerivation
-               ({ de_domain_rule_id = "llm-inference";
-                  de_rule_desc = "proxy-classified";
-                  de_confidence = 50 })
+               ({ de_domain_rule_id = "llm-inference" })
 \end{lstlisting}
 
 The classification is conservative: it assigns the \emph{strongest} rule
 whose structural precondition is met (Identity $>$ Extraction $>$
 Aggregation $>$ Derivation). Observation extraction filters chat messages to
-retain only evidence-bearing roles (\texttt{RoleTool} $\to$
-\texttt{ToolOutput}, \texttt{RoleUser} $\to$ \texttt{ExternalInput});
-system and assistant messages produce no observations.
+retain only evidence-bearing roles (\texttt{RoleTool}, \texttt{RoleUser});
+system and assistant messages produce no observations. LBAC
+provenance~\cite{zhou2026lbac} validation matches each tool message's
+\texttt{tool\_call\_id} against declared \texttt{tool\_calls} in preceding
+assistant messages---matched tools receive \texttt{ToolOutput} trust,
+unmatched tools receive \texttt{Unverified} trust. TACIT~\cite{odersky2026tacit}
+trust derivation at P3 then rejects any write whose observations include
+unverified provenance, composing the two checks into a defense against
+injected tool responses.
 
 \subsection{Proxy Incorrectness Lemmas (\texttt{ProxyLemmas.fst})}
 \label{sec:proxy-lemmas}
@@ -492,9 +501,10 @@ message list.
 The Python runtime mirrors the \fstar{} specification with structural
 fidelity. \texttt{gateway\_client.py} (533 lines) implements
 \texttt{PraxisGatewayClient}, which executes the same verification pipeline
-as \texttt{VerifiedWrite.fst}: P1+P2 (inference soundness and consistency)
-followed by P3 (poison detection) followed by P4 (completeness) followed by
-P5+P7 (ownership and bounds). Each \fstar{} function---\texttt{chain\_well\_formed},
+as \texttt{VerifiedWrite.fst}: P1 (inference soundness) $\to$ P2
+(consistency) $\to$ P3 (poison detection + TACIT trust derivation) $\to$
+P4 (completeness) $\to$ P5 (bounds) $\to$ P6 (ownership + certificate).
+Each \fstar{} function---\texttt{chain\_well\_formed},
 \texttt{no\_contradiction}, \texttt{content\_safe},
 \texttt{completeness\_check}---has a Python mirror that accepts the same
 arguments, applies the same case analysis, and returns the same verdict. The
@@ -661,12 +671,12 @@ tests.
 \toprule
 \textbf{Artifact} & \textbf{Count} & \textbf{Status} \\
 \midrule
-\fstar{} specifications    & 24 & All verified (zero admits) \\
-Python runtime tests        & 177 & All pass \\
+\fstar{} specifications    & 17 & All verified (zero admits) \\
+Python runtime tests        & 174 & All pass \\
 OWASP ASI06 vectors         & 23 + 8 benign & Full coverage \\
 Normalization tests         & 20 assert\_norm & Type-checker evaluated \\
-Incorrectness lemmas (core) & 7 (L1--L7) & All verified \\
-Incorrectness lemmas (proxy) & 3 (L\textsubscript{P1}--L\textsubscript{P3}) & All verified \\
+Incorrectness lemmas (core) & 8 (L1--L8) & All verified \\
+Incorrectness lemmas (proxy) & 6 (L\textsubscript{P1}--L\textsubscript{P6}) & All verified \\
 Proto messages              & 30+ & Request/response/enum \\
 Hallucination loop          & 1 canonical & Rejected at P1 \\
 \bottomrule
@@ -712,9 +722,9 @@ and the Python mirror ever diverge, the bridge catches it.
 \subsection{Incorrectness Lemma Coverage}
 
 Following Gardner's incorrectness logic~\cite{gardner2026incorrectness},
-\texttt{PraxisLemmas.fst} contains 7 core lemmas (L1--L7) that prove
+\texttt{PraxisLemmas.fst} contains 8 core lemmas (L1--L8) that prove
 rejection is \emph{necessary} under specific attack conditions, and
-\texttt{ProxyLemmas.fst} adds 3 proxy lemmas (L\textsubscript{P1}--L\textsubscript{P3})
+\texttt{ProxyLemmas.fst} adds 6 proxy lemmas (L\textsubscript{P1}--L\textsubscript{P6})
 that prove the inference proxy classification is tight.
 
 \begin{table}[t]
@@ -729,8 +739,9 @@ L2 & Identity with multiple premises & P1 rejects \\
 L3 & ToolResult with untrusted source & P1 rejects \\
 L4 & Empty inference chain & P1 rejects \\
 L5 & Derivation with empty rule id & P1 rejects \\
-L6 & Derivation with confidence $>$ 100 & P1 rejects \\
-L7 & Contradiction with existing memory & P2 rejects \\
+L6 & Derivation with novel tokens (LBAC IFC) & P1 rejects \\
+L7 & Aggregation with novel tokens (LBAC IFC) & P1 rejects \\
+L8 & Contradiction with existing memory & P2 rejects \\
 \midrule
 L\textsubscript{P1} & Verbatim tool relay & Classified Identity \\
 L\textsubscript{P2} & Novel content (hallucination) & Not classified Identity \\
@@ -739,13 +750,18 @@ L\textsubscript{P3} & No evidence (system/assistant only) & Classified Derivatio
 \end{tabular}
 \end{table}
 
-L5 is particularly significant: even the weakest inference rule (Derivation)
-rejects evidence-free claims. An agent cannot bypass the verification gate
-by choosing the least restrictive rule---every rule demands \emph{some}
-evidence. The proxy lemmas complement this: L\textsubscript{P2} proves that
-the automatic classifier never misidentifies hallucinations as verbatim
-relay, and L\textsubscript{P3} proves that evidence-free conclusions are
-always flagged as derivations regardless of their content.
+L5--L7 are particularly significant: even the weakest inference rules
+(Derivation and Aggregation) reject fabricated content. L5 proves that
+evidence-free derivations are rejected. L6 and L7 prove that novel tokens
+(adopting the LBAC~\cite{zhou2026lbac} information flow control principle)
+are rejected in both Derivation and Aggregation, closing the gap where
+\texttt{classify\_rule} would route short fabrications to Aggregation.
+An agent cannot bypass the verification gate by choosing the least
+restrictive rule---every rule enforces content containment. The proxy
+lemmas complement this: L\textsubscript{P2} proves that the automatic
+classifier never misidentifies hallucinations as verbatim relay, and
+L\textsubscript{P3} proves that evidence-free conclusions are always
+flagged as derivations regardless of their content.
 
 
 %%% ================================================================
@@ -754,14 +770,19 @@ always flagged as derivations regardless of their content.
 
 \subsection{Limitations}
 
-\paragraph{(a) The Derivation rule is intentionally weak.}
-The weakest inference rule, \texttt{RuleDerivation}, requires only a
-non-empty domain rule identifier and a confidence score in [0, 100]. It does
-not verify the validity of the domain rule itself. This is a deliberate
-design choice: domain-specific abductive reasoning cannot be verified by a
-general-purpose formal system without a domain ontology. Strict deployments
-can extend Praxis with a \emph{domain rule catalog}. Crucially, incorrectness
-lemma L5 proves that even this weakest rule rejects evidence-free claims.
+\paragraph{(a) The Derivation rule is the weakest but not unguarded.}
+The weakest inference rule, \texttt{RuleDerivation}, requires a non-empty
+domain rule identifier AND token containment---every token in the conclusion
+must appear in at least one premise. This adopts the LBAC
+IFC~\cite{zhou2026lbac} principle: untrusted synthesis cannot introduce
+information not present in the observations without passing through a
+trusted boundary (tool call or user input). Aggregation applies the same
+token containment, closing the gap where \texttt{classify\_rule} would
+route short fabrications to Aggregation (bypassing Derivation). Incorrectness
+lemmas L5, L6, and L7 prove that evidence-free claims, novel-token
+derivations, and novel-token aggregations are all rejected. Strict
+deployments can further extend Praxis with a \emph{domain rule catalog}
+providing pre/postconditions per rule.
 
 \paragraph{(b) Specification correctness.}
 Formal verification proves that code meets its specification. It does not
@@ -832,7 +853,7 @@ isolation, and the frame rule proves that skill persistence does not corrupt
 curated memory. Second, the verification strength spectrum provides five
 inference rule categories that give deployers a graduated trust model rather
 than binary privileged/quarantined separation. Third, incorrectness lemmas
-(7 core + 3 proxy) prove that rejection is necessary under attack
+(8 core + 6 proxy) prove that rejection is necessary under attack
 conditions. Fourth, the inference proxy provides framework-agnostic
 observation capture at the model serving boundary, solving the observation
 loss problem that renders memory-hook-based verification vacuous. Fifth, the
