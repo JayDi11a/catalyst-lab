@@ -578,43 +578,15 @@ application-layer data exfiltration---neither alone is sufficient. Tether
 adds a third layer that neither addresses: \emph{content verification} of
 what the agent persists.
 
-\begin{lstlisting}[language={},caption={Three-layer sandboxing architecture on OpenShift AI.},label={lst:arch}]
-+- OpenShift AI Cluster ----------------------------+
-|                                                    |
-| vLLM/KServe InferenceService (GPU, TrustyAI)     |
-|       ^                                            |
-|       | HTTPS (OSSM mTLS, ODH CA chain)            |
-|                                                    |
-| +- Layer 1: Kata (kernel isolation) ------------+ |
-| | runtimeClassName: kata                         | |
-| | Prevents: container escapes, page cache attacks| |
-| |                                                | |
-| | +- Layer 2: OpenShell (application sandbox) -+ | |
-| | | Policy Engine: seccomp + Landlock + cgroups | | |
-| | | Privacy Router: local-only inference       | | |
-| | | Prevents: exfiltration, unauthorized I/O   | | |
-| | |                                            | | |
-| | | +- Inference Proxy (:8082) -------------+ | | |
-| | | | classify_rule -> Id/Ext/Agg/Deriv      | | | |
-| | | | X-Tether-Rule / X-Tether-Status        | | | |
-| | | +-----+---------------------------------+ | | |
-| | |       ^ OpenAI-compatible API             | | |
-| | | +- Hermes Agent (UBI 9) ---------------+ | | |
-| | | | MEMORY.md, USER.md, SQLite, skills   | | | |
-| | | +-------------+-----------------------+ | | |
-| | |               | gRPC MemoryIntent        | | |
-| | | +- Layer 3: Tether (content verif.) ---+ | | |
-| | | | Tether Sidecar (:50052)              | | | |
-| | | | F*/Z3 -> proof cert or rejection     | | | |
-| | | | OTel span -> MLflow audit trail      | | | |
-| | | | Prevents: hallucination persistence  | | | |
-| | | +--------------------------------------+ | | |
-| | +------------------------------------------+ | |
-| +----------------------------------------------+ |
-|                                                    |
-| PostgreSQL (CNPG) | OTel Collector | MLflow | Tempo|
-+----------------------------------------------------+
-\end{lstlisting}
+\paragraph{Reference deployment.}
+The complete architecture is rendered in the repository-level
+\texttt{tether-architecture.svg} and its interactive HTML companion. The
+rendering makes Red Hat OpenShift AI the outer evaluation boundary: KServe/vLLM
+model serving and OpenShift platform services surround the workload, while
+Kata, NVIDIA OpenShell, and Tether provide progressively stronger isolation,
+runtime policy, and evidence-bound verification. The deployment path is
+KServe/vLLM inference \(\to\) Tether inference proxy \(\to\) Hermes agent
+\(\to\) Tether sidecar/gateway \(\to\) CNPG, MLflow, and OTel-backed evidence.
 
 \paragraph{Extending Red Hat OpenShift AI TrustyAI.}
 RHOAI TrustyAI monitors model-level trust: fairness metrics, explainability

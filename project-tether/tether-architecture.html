@@ -19,20 +19,20 @@
     --border:         rgba(11,11,11,0.10);
 
     /* Categorical — layer identity */
-    --layer-kata:       #2a78d6;
-    --layer-openshell:  #eb6834;
-    --layer-tether:     #1baf7a;
+    --layer-kata:       #0066cc;
+    --layer-openshell:  #f36f21;
+    --layer-tether:     #ee0000;
 
     /* Component identity */
-    --comp-hermes:      #eda100;
-    --comp-proxy:       #e87ba4;
-    --comp-gateway:     #4a3aa7;
+    --comp-hermes:      #e6b800;
+    --comp-proxy:       #7654c5;
+    --comp-gateway:     #ee0000;
 
     /* Supporting */
-    --svc-kserve:       #2a78d6;
-    --svc-pg:           #eb6834;
-    --svc-mlflow:       #1baf7a;
-    --svc-otel:         #eda100;
+    --svc-kserve:       #0066cc;
+    --svc-pg:           #f36f21;
+    --svc-mlflow:       #1b7f3a;
+    --svc-otel:         #7654c5;
 
     --layer-kata-bg:      rgba(42,120,214,0.06);
     --layer-openshell-bg: rgba(235,104,52,0.06);
@@ -51,18 +51,18 @@
       --baseline:       #383835;
       --border:         rgba(255,255,255,0.10);
 
-      --layer-kata:       #3987e5;
-      --layer-openshell:  #d95926;
-      --layer-tether:     #199e70;
+      --layer-kata:       #4da3ff;
+      --layer-openshell:  #ff8a4c;
+      --layer-tether:     #ff4d4d;
 
-      --comp-hermes:      #c98500;
-      --comp-proxy:       #d55181;
-      --comp-gateway:     #9085e9;
+      --comp-hermes:      #f2cc00;
+      --comp-proxy:       #b39ddb;
+      --comp-gateway:     #ff4d4d;
 
-      --svc-kserve:       #3987e5;
-      --svc-pg:           #d95926;
-      --svc-mlflow:       #199e70;
-      --svc-otel:         #c98500;
+      --svc-kserve:       #4da3ff;
+      --svc-pg:           #ff8a4c;
+      --svc-mlflow:       #4caf70;
+      --svc-otel:         #b39ddb;
 
       --layer-kata-bg:      rgba(57,135,229,0.08);
       --layer-openshell-bg: rgba(217,89,38,0.08);
@@ -80,18 +80,18 @@
     --baseline:       #383835;
     --border:         rgba(255,255,255,0.10);
 
-    --layer-kata:       #3987e5;
-    --layer-openshell:  #d95926;
-    --layer-tether:     #199e70;
+    --layer-kata:       #4da3ff;
+    --layer-openshell:  #ff8a4c;
+    --layer-tether:     #ff4d4d;
 
-    --comp-hermes:      #c98500;
-    --comp-proxy:       #d55181;
-    --comp-gateway:     #9085e9;
+    --comp-hermes:      #f2cc00;
+    --comp-proxy:       #b39ddb;
+    --comp-gateway:     #ff4d4d;
 
-    --svc-kserve:       #3987e5;
-    --svc-pg:           #d95926;
-    --svc-mlflow:       #199e70;
-    --svc-otel:         #c98500;
+    --svc-kserve:       #4da3ff;
+    --svc-pg:           #ff8a4c;
+    --svc-mlflow:       #4caf70;
+    --svc-otel:         #b39ddb;
 
     --layer-kata-bg:      rgba(57,135,229,0.08);
     --layer-openshell-bg: rgba(217,89,38,0.08);
@@ -99,7 +99,7 @@
   }
 
   body {
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: "Red Hat Text", "Red Hat Display", system-ui, -apple-system, "Segoe UI", sans-serif;
     background: var(--surface-2);
     color: var(--text-primary);
     padding: 32px 24px;
@@ -120,6 +120,27 @@
     font-size: 0.875rem;
     color: var(--text-secondary);
     margin-bottom: 24px;
+  }
+  .context-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: -14px;
+    margin-bottom: 18px;
+    padding: 6px 10px;
+    border: 1px solid #f4a2a2;
+    border-radius: 999px;
+    background: #fff0f0;
+    color: #a30000;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .context-line::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ee0000;
   }
 
   /* ── Legend ── */
@@ -158,6 +179,7 @@
 
   .platform-header {
     padding: 14px 20px;
+    border-top: 6px solid #ee0000;
     border-bottom: 1px solid var(--gridline);
     display: flex;
     align-items: center;
@@ -170,8 +192,8 @@
     letter-spacing: 0.04em;
     padding: 2px 8px;
     border-radius: 4px;
-    background: rgba(42,120,214,0.12);
-    color: var(--svc-kserve);
+    background: rgba(238,0,0,0.10);
+    color: #a30000;
   }
   .platform-header .title {
     font-size: 0.9375rem;
@@ -598,8 +620,9 @@
 <button class="theme-toggle" onclick="toggleTheme()">Toggle dark/light</button>
 
 <div class="viz-root">
-  <h1>Project Tether — End-to-End Architecture</h1>
-  <p class="subtitle">Three-layer sandbox on OpenShift AI: Kata → OpenShell → Tether</p>
+  <h1>Tether — OpenShift AI Reference Architecture</h1>
+  <p class="subtitle">A Red Hat OpenShift AI evaluation boundary for evidence-bound agent actions</p>
+  <div class="context-line">Platform boundary: Red Hat OpenShift AI · KServe/vLLM · OpenShift services · shared state and observability</div>
 
   <!-- Legend -->
   <div class="legend" role="list" aria-label="Legend">
@@ -615,7 +638,7 @@
   <div class="arch">
     <div class="platform-header">
       <span class="badge">Platform</span>
-      <span class="title">OpenShift AI (Red Hat)</span>
+      <span class="title">Red Hat OpenShift AI · evaluation boundary</span>
     </div>
 
     <div class="arch-body">
@@ -789,7 +812,7 @@
         <strong style="color:var(--layer-openshell);">Tool use</strong> — P9 tool scope · P10 side-effect containment
       </div>
     </div>
-    <div style="font-size:0.6875rem;color:var(--text-muted);margin-top:8px;">24 F* specs · 177 Python tests · 10 incorrectness lemmas</div>
+    <div style="font-size:0.6875rem;color:var(--text-muted);margin-top:8px;">22 F* specs · 175 Python tests · 10 incorrectness lemmas</div>
   </div>
 
   <!-- Print-only footer -->

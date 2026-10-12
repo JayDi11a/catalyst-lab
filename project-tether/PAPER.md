@@ -214,31 +214,14 @@ Following Gardner (OPLSS 2026), we prove rejection is *necessary* under attack c
 
 ### 4.2 Deployment on Red Hat OpenShift AI
 
-```text
-┌─ OpenShift AI ─────────────────────────────────────────────────┐
-│                                                                 │
-│  vLLM/KServe InferenceService (GPU model serving)              │
-│         │                                                       │
-│         ▼ OpenAI-compatible API                                 │
-│  ┌─ NVIDIA OpenShell Sandbox ───────────────────────────────┐   │
-│  │                                                          │   │
-│  │  ┌─ Hermes Agent (UBI 9, quay.io/aicatalyst) ────────┐  │   │
-│  │  │  MEMORY.md, USER.md, SQLite FTS5, skills, cron     │  │   │
-│  │  │  All 5 surfaces produce MemoryIntents              │  │   │
-│  │  └──────────────┬─────────────────────────────────────┘  │   │
-│  │                 │ gRPC MemoryIntent                      │   │
-│  │  ┌──────────────▼─────────────────────────────────────┐  │   │
-│  │  │  Tether Sidecar                                    │  │   │
-│  │  │  F*/Z3 → proof certificate or rejection            │  │   │
-│  │  │  OTel span → MLflow audit trail                    │  │   │
-│  │  └────────────────────────────────────────────────────┘  │   │
-│  │  Policy Engine (seccomp, Landlock, eBPF, cgroups)        │   │
-│  │  Privacy Router (local-only inference)                   │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  PostgreSQL (CNPG) · OTel Collector · MLflow · Tempo/Grafana   │
-└─────────────────────────────────────────────────────────────────┘
-```
+![Project Tether deployment boundary on Red Hat OpenShift AI](tether-architecture.svg)
+
+The rendering makes the deployment boundary explicit: this proof of concept
+is evaluated inside **Red Hat OpenShift AI**, with KServe/vLLM model serving,
+OpenShift platform services, and shared state/observability surrounding the
+Kata → NVIDIA OpenShell → Tether enforcement stack. The [interactive HTML
+rendering](tether-architecture.html) is the presentation-quality companion to
+this paper figure.
 
 ### 4.3 Complementary Enforcement
 

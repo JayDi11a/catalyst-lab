@@ -97,83 +97,14 @@ OpenShell and Tether are complementary:
 
 ## System Architecture
 
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│                    KUBERNETES CLUSTER                             │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │  OPENSHELL SANDBOX (per kagent agent pod)                  │  │
-│  │                                                            │  │
-│  │  ┌──────────────────────────────────────────────────────┐  │  │
-│  │  │  AGENT RUNTIME (Hermes / OpenClaw / Kagent)          │  │  │
-│  │  │                                                      │  │  │
-│  │  │  Observations ──► Inference ──► MemoryIntent         │  │  │
-│  │  │                                    {key, value,      │  │  │
-│  │  │                                     reasoning,       │  │  │
-│  │  │                                     trace_id}        │  │  │
-│  │  └──────────────────────┬───────────────────────────────┘  │  │
-│  │                         │                                  │  │
-│  │                         ▼                                  │  │
-│  │  ┌──────────────────────────────────────────────────────┐  │  │
-│  │  │  Tether VERIFICATION GATEWAY                            │  │  │
-│  │  │                                                      │  │  │
-│  │  │  ┌─────────────────────┐  ┌───────────────────────┐  │  │  │
-│  │  │  │  Content Verifier   │  │  F* MCP Server        │  │  │  │
-│  │  │  │  (F* refinement     │  │  (fstarmcp skill)     │  │  │  │
-│  │  │  │   types + Z3)       │  │                       │  │  │  │
-│  │  │  │                     │  │  Incremental           │  │  │  │
-│  │  │  │  P1 soundness       │◄─┤  typechecking         │  │  │  │
-│  │  │  │  P2 consistency     │  │  (stateful session)   │  │  │  │
-│  │  │  │  P3 poisoning       │  │                       │  │  │  │
-│  │  │  │  P4 completeness    │  │  Avoids full recheck  │  │  │  │
-│  │  │  └─────────────────────┘  │  on every write       │  │  │  │
-│  │  │                           └───────────────────────┘  │  │  │
-│  │  │  ┌─────────────────────┐                             │  │  │
-│  │  │  │  Substrate Verifier │                             │  │  │
-│  │  │  │  (Pulse/Steel       │                             │  │  │
-│  │  │  │   separation logic  │                             │  │  │
-│  │  │  │   + Z3)             │                             │  │  │
-│  │  │  │                     │                             │  │  │
-│  │  │  │  P5 ownership       │                             │  │  │
-│  │  │  │  P6 frame rule      │                             │  │  │
-│  │  │  │  P7 bounds          │                             │  │  │
-│  │  │  │  P8 concurrency     │                             │  │  │
-│  │  │  └─────────────────────┘                             │  │  │
-│  │  │            │                                         │  │  │
-│  │  │     Verified ✓ / Rejected ✗                          │  │  │
-│  │  │            │                                         │  │  │
-│  │  │  ┌─────────▼──────────────────────────────────────┐  │  │  │
-│  │  │  │  Proof certificate ──► OTel span               │  │  │  │
-│  │  │  │  · tether.proof.status = verified|rejected        │  │  │  │
-│  │  │  │  · tether.proof.properties = [P1,P2,P5,P7]       │  │  │  │
-│  │  │  │  · tether.proof.z3_time_ms = <discharge time>     │  │  │  │
-│  │  │  └────────────────────────────────────────────────┘  │  │  │
-│  │  └──────────────────────────────────────────────────────┘  │  │
-│  │                         │                                  │  │
-│  │  OpenShell Policy Engine │  OpenShell Privacy Router       │  │
-│  │  (fs/net/proc deny-by-  │  (local Nemotron vs cloud       │  │
-│  │   default enforcement)  │   inference routing)            │  │
-│  └─────────────────────────┼──────────────────────────────────┘  │
-│                            │                                     │
-│                            ▼                                     │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │  PERSISTENT MEMORY STORE                                  │    │
-│  │                                                           │    │
-│  │  Tier 1: Core memory (MEMORY.md, USER.md)                │    │
-│  │  Tier 2: Session logs (SQLite/FTS5)                      │    │
-│  │  Tier 3: Semantic search (vector embeddings)             │    │
-│  │  Tier 4: External providers                              │    │
-│  └──────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │  OBSERVABILITY (existing catalyst-lab stack)              │    │
-│  │                                                           │    │
-│  │  OTel Collector ──► MLflow (proof audit trail)           │    │
-│  │                 ──► Tempo  (proof latency traces)        │    │
-│  │  Grafana: Tether verification dashboard                     │    │
-│  └──────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────────┘
-```
+![Project Tether on Red Hat OpenShift AI](tether-architecture.svg)
+
+This is the evaluation architecture, not a generic Kubernetes topology.
+**Red Hat OpenShift AI is the outer platform boundary**: KServe/vLLM provides
+the model endpoint; OpenShift services provide routing, GPU scheduling, mesh,
+and observability; and the workload is protected by Kata, NVIDIA OpenShell,
+and Tether in that order. The [interactive rendering](tether-architecture.html)
+provides the same architecture with hover details and print/PDF support.
 
 ## Verification Properties
 
@@ -471,7 +402,7 @@ OpenShell Privacy Router         →   Inference routing (local vs cloud)
 5. Use `specreview` to validate the generated specs
 6. Deliverable: verified F\*/Pulse module for a single memory write
 
-Scope constraints: single agent, Tier 1 only, no concurrency, no Kubernetes.
+Scope constraints: single agent, Tier 1 only, no concurrency, no platform deployment.
 
 ### Phase 1: Content Verification (Weeks 3-5)
 
@@ -490,7 +421,7 @@ Scope constraints: single agent, Tier 1 only, no concurrency, no Kubernetes.
 5. Use `krmlextraction` to compile verified substrate checks to C
 6. Benchmark: target < 1s verification for Tier 1 writes
 
-### Phase 3: Kubernetes Integration (Weeks 9-12)
+### Phase 3: Red Hat OpenShift AI Integration (Weeks 9-12)
 
 1. Tether gateway deployed as sidecar inside OpenShell sandbox
 2. OTel instrumentation: proof certificates as spans

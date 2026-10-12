@@ -1,6 +1,6 @@
 # Project Tether
 
-**Formally verified AI agent runtime on Kubernetes — proving correctness of LLM reasoning, agent decisions, tool use, and persistent memory.**
+**Formally verified AI agent runtime evaluated on Red Hat OpenShift AI — proving correctness of LLM reasoning, agent decisions, tool use, and persistent memory.**
 
 Tether bridges formal proof logic (F\*/Pulse separation logic, Z3 SMT solver) with AI agent runtimes (Hermes, OpenClaw) and sandboxed execution (NVIDIA OpenShell) to provide machine-checked guarantees across the full agent action chain: from LLM inference through tool execution to persistent state.
 
@@ -32,44 +32,14 @@ Both layers generate verification conditions that Z3 discharges. Actions proceed
 
 ### Architecture
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│  OPENSHELL SANDBOX (per agent)                              │
-│                                                             │
-│  Agent Runtime ──► ActionIntent                             │
-│  (LLM inference,     │                                     │
-│   agent decision,    │                                     │
-│   tool call,         │                                     │
-│   memory write)      │                                     │
-│                      ▼                                     │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  TETHER VERIFICATION GATEWAY                         │  │
-│  │                                                      │  │
-│  │  fstar-coder agent (proof-copilot / Claude Code)     │  │
-│  │  F* MCP Server (incremental typechecking)            │  │
-│  │                                                      │  │
-│  │  Content:   P1 inference soundness                   │  │
-│  │             P2 consistency                           │  │
-│  │             P3 poisoning resistance                  │  │
-│  │             P4 completeness                          │  │
-│  │                                                      │  │
-│  │  Substrate: P5 ownership (separation logic)          │  │
-│  │             P6 frame rule                            │  │
-│  │             P7 bounds enforcement                    │  │
-│  │             P8 concurrency safety (PulseCore CSL)    │  │
-│  │                                                      │  │
-│  │  Tool use:  P9 tool scope (call within declared API) │  │
-│  │             P10 side-effect containment              │  │
-│  │                                                      │  │
-│  │  fstar.exe + Z3 ──► Verified ✓ / Rejected ✗         │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                        │                                    │
-│                        ▼                                    │
-│  Action execution (tool call, memory write, response)      │
-│                                                             │
-│  OpenShell Policy Engine    OpenShell Privacy Router        │
-└─────────────────────────────────────────────────────────────┘
-```
+![Project Tether on Red Hat OpenShift AI](tether-architecture.svg)
+
+The reference architecture treats **Red Hat OpenShift AI as the evaluation
+boundary**, not merely as a generic Kubernetes cluster. KServe/vLLM model
+serving, OpenShift platform services, the three enforcement layers, shared
+state, and observability are shown together in the rendering above. An
+[interactive version](tether-architecture.html) is also available for
+presentation and PDF export.
 
 ## Prerequisites
 
@@ -271,7 +241,7 @@ kubectl -n kagent patch deployment kagent-controller \
 | 0 | Single verified action (P1, P2, P5, P7) | **Complete** |
 | 1 | Content + tool use verification with OWASP test vectors | **Complete** |
 | 2 | Full Pulse substrate model (Hermes + OpenClaw + tool scope) | **Complete** |
-| 3 | Kubernetes integration (sidecar, OTel, Grafana dashboard) | Partial (manifests ready) |
+| 3 | OpenShift AI integration (sidecar, OTel, Grafana dashboard) | Partial (manifests ready) |
 | 4 | Multi-agent fleet + EU AI Act compliance trail | Not started |
 
 ## References
